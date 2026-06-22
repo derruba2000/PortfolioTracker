@@ -56,7 +56,7 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
                     security=security,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.BUY,
-                    quantity=Decimal("10"),
+                    quantity=10,
                     price=Decimal("100"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),
@@ -67,7 +67,7 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
                     security=security,
                     date=datetime(2026, 1, 2),
                     type=TransactionType.SELL,
-                    quantity=Decimal("4"),
+                    quantity=4,
                     price=Decimal("150"),
                     fees=Decimal("0"),
                     total_value=Decimal("600"),
@@ -78,7 +78,7 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
                     security=security,
                     date=datetime(2026, 1, 3),
                     type=TransactionType.BUY,
-                    quantity=Decimal("100"),
+                    quantity=100,
                     price=Decimal("1"),
                     fees=Decimal("0"),
                     total_value=Decimal("100"),
@@ -104,12 +104,12 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
 
     assert positions.loc[0, "Ticker"] == "AAPL"
     assert positions.loc[0, "Quantity"] == "6"
-    assert positions.loc[0, "Average Cost"] == "100"
-    assert positions.loc[0, "Market Value"] == "960"
-    assert positions.loc[0, "Unrealized P&L"] == "360"
+    assert Decimal(str(positions.loc[0, "Average Cost"])) == Decimal("100")
+    assert Decimal(str(positions.loc[0, "Market Value"])) == Decimal("960")
+    assert Decimal(str(positions.loc[0, "Unrealized P&L"])) == Decimal("360")
     assert len(positions) == 1
-    assert pnl.loc[0, "Realized P&L"] == "200"
-    assert summary.loc[0, "Value"] == "960"
+    assert Decimal(str(pnl.loc[0, "Realized P&L"])) == Decimal("200")
+    assert Decimal(str(summary.loc[0, "Value"])) == Decimal("960")
 
     sandbox_positions = current_positions(account_mode=SANDBOX_MODE)
     sandbox_summary = dashboard_summary(account_mode=SANDBOX_MODE)
@@ -118,7 +118,7 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
 
     assert sandbox_positions.loc[0, "Account"] == "Test"
     assert sandbox_positions.loc[0, "Quantity"] == "100"
-    assert sandbox_summary.loc[0, "Value"] == "16000"
+    assert Decimal(str(sandbox_summary.loc[0, "Value"])) == Decimal("16000")
     assert asset_allocation.loc[0, "Asset Class"] == "EQUITY"
     assert currency_allocation.loc[0, "Currency"] == "USD"
 
@@ -143,7 +143,7 @@ def test_twr_curve_links_daily_returns(monkeypatch) -> None:
                     portfolio=portfolio,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.DEPOSIT,
-                    quantity=Decimal("1000"),
+                    quantity=1000,
                     price=Decimal("1"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),
@@ -154,7 +154,7 @@ def test_twr_curve_links_daily_returns(monkeypatch) -> None:
                     security=security,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.BUY,
-                    quantity=Decimal("10"),
+                    quantity=10,
                     price=Decimal("100"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),

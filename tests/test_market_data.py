@@ -54,7 +54,7 @@ def test_update_market_data_stores_prices_and_fx_rates() -> None:
                 security=security,
                 date=datetime(2026, 6, 20),
                 type=TransactionType.BUY,
-                quantity=Decimal("1"),
+                quantity=1,
                 price=Decimal("100"),
                 fees=Decimal("0"),
                 total_value=Decimal("100"),

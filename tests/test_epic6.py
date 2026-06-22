@@ -56,7 +56,7 @@ def test_rebalance_report_compares_actual_to_targets(monkeypatch) -> None:
                     security=security,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.BUY,
-                    quantity=Decimal("10"),
+                    quantity=10,
                     price=Decimal("100"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),
@@ -79,11 +79,11 @@ def test_rebalance_report_compares_actual_to_targets(monkeypatch) -> None:
     report = rebalance_report(account_choice)
 
     assert targets.loc[0, "Asset Class"] == "EQUITY"
-    assert targets.loc[0, "Target %"] == "60.0"
-    assert report.loc[0, "Actual %"] == "100"
-    assert report.loc[0, "Target %"] == "60.0"
+    assert Decimal(str(targets.loc[0, "Target %"])) == Decimal("60")
+    assert Decimal(str(report.loc[0, "Actual %"])) == Decimal("100")
+    assert Decimal(str(report.loc[0, "Target %"])) == Decimal("60")
     assert report.loc[0, "Action"] == "SELL"
-    assert report.loc[0, "Trade Value"] == "400.0"
+    assert Decimal(str(report.loc[0, "Trade Value"])) == Decimal("400")
 
 
 def test_tax_prep_report_includes_dividends(monkeypatch) -> None:
@@ -106,7 +106,7 @@ def test_tax_prep_report_includes_dividends(monkeypatch) -> None:
                 security=security,
                 date=datetime(2026, 1, 1),
                 type=TransactionType.DIVIDEND,
-                quantity=Decimal("1"),
+                quantity=1,
                 price=Decimal("5"),
                 fees=Decimal("0"),
                 total_value=Decimal("5"),
@@ -120,7 +120,7 @@ def test_tax_prep_report_includes_dividends(monkeypatch) -> None:
     report = tax_prep_report(tax_year=2026)
 
     assert report.loc[0, "Type"] == "DIVIDEND"
-    assert report.loc[0, "Amount"] == "5"
+    assert Decimal(str(report.loc[0, "Amount"])) == Decimal("5")
 
 
 def test_benchmark_overlay_normalizes_benchmark(monkeypatch) -> None:
@@ -145,7 +145,7 @@ def test_benchmark_overlay_normalizes_benchmark(monkeypatch) -> None:
                     portfolio=portfolio,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.DEPOSIT,
-                    quantity=Decimal("1000"),
+                    quantity=1000,
                     price=Decimal("1"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),
@@ -156,7 +156,7 @@ def test_benchmark_overlay_normalizes_benchmark(monkeypatch) -> None:
                     security=security,
                     date=datetime(2026, 1, 1),
                     type=TransactionType.BUY,
-                    quantity=Decimal("10"),
+                    quantity=10,
                     price=Decimal("100"),
                     fees=Decimal("0"),
                     total_value=Decimal("1000"),

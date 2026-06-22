@@ -82,10 +82,12 @@ Recommended columns:
 
 ```csv
 Date,Type,Description,Ticker,Security Name,Asset Class,Security Currency,Quantity,Price,Fees,Total Value,FX Rate
-2026-06-21,BUY,Initial allocation,VWCE,Vanguard FTSE All-World UCITS ETF,ETF,EUR,2.5,100.25,1.50,,1
+2026-06-21,BUY,Initial allocation,VWCE,Vanguard FTSE All-World UCITS ETF,ETF,EUR,2,100.25,1.50,,1
 2026-06-22,DIVIDEND,Quarterly distribution,VWCE,Vanguard FTSE All-World UCITS ETF,ETF,EUR,1,3.25,0,,1
 2026-06-23,SPLIT,Share split,VWCE,Vanguard FTSE All-World UCITS ETF,ETF,EUR,2,0,0,,1
 ```
+
+`Quantity` must be an integer number of units.
 
 For `SPLIT`, store the split ratio in `Quantity`; for example `2` means a 2-for-1 split. Split transactions are stored with zero cash flow.
 

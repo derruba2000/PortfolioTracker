@@ -82,7 +82,7 @@ class TransactionInput:
     date: datetime
     transaction_type: TransactionType
     ticker: str | None
-    quantity: Decimal
+    quantity: int
     price: Decimal
     fees: Decimal = Decimal("0")
     total_value: Decimal | None = None
@@ -252,7 +252,7 @@ def transaction_input_from_mapping(raw_values: dict[str, Any]) -> TransactionInp
         security_currency_code=(
             _clean_string(values.get("security_currency_code")) or DEFAULT_CURRENCY_CODE
         ).upper(),
-        quantity=_parse_decimal(values.get("quantity"), default=Decimal("0")),
+        quantity=_parse_int(values.get("quantity"), default=0),
         price=_parse_decimal(values.get("price"), default=Decimal("0")),
         fees=_parse_decimal(values.get("fees"), default=Decimal("0")),
         total_value=_parse_optional_decimal(values.get("total_value")),
@@ -310,7 +310,7 @@ def _calculate_total_value(transaction_input: TransactionInput) -> Decimal:
     if transaction_input.total_value is not None:
         return transaction_input.total_value
 
-    gross_value = transaction_input.quantity * transaction_input.price
+    gross_value = Decimal(transaction_input.quantity) * transaction_input.price
 
     if transaction_input.transaction_type == TransactionType.BUY:
         return gross_value + transaction_input.fees
@@ -460,6 +460,21 @@ def _parse_optional_decimal(value: Any) -> Decimal | None:
 
 def _parse_optional_int(value: Any) -> int | None:
     return parse_choice_id(_clean_string(value))
+
+
+def _parse_int(value: Any, default: int) -> int:
+    if _is_missing(value):
+        return default
+
+    try:
+        decimal_value = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"Invalid integer value '{value}'.") from exc
+
+    if decimal_value != decimal_value.to_integral_value():
+        raise ValueError(f"Quantity must be an integer value, got '{value}'.")
+
+    return int(decimal_value)
 
 
 def _parse_bool(value: Any) -> bool:

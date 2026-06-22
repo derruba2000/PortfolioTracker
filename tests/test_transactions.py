@@ -50,7 +50,7 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
             security_name="Vanguard FTSE All-World UCITS ETF",
             asset_class=AssetClass.ETF,
             security_currency_code="EUR",
-            quantity=Decimal("2.5"),
+            quantity=2,
             price=Decimal("100.25"),
             fees=Decimal("1.50"),
         ),
@@ -70,7 +70,7 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     assert transaction.description == "Initial allocation"
     assert security is not None
     assert security.asset_class == AssetClass.ETF
-    assert transaction.total_value == Decimal("252.125")
+    assert transaction.total_value == Decimal("202")
 
 
 def test_import_transactions_from_dataframe(session: Session) -> None:
@@ -128,7 +128,7 @@ def test_dividend_requires_positive_total_value(session: Session) -> None:
                 date=datetime(2026, 6, 21),
                 transaction_type=TransactionType.DIVIDEND,
                 ticker="AAPL",
-                quantity=Decimal("0"),
+                quantity=0,
                 price=Decimal("0"),
             ),
         )
@@ -141,14 +141,14 @@ def test_split_is_stored_as_ratio_with_zero_cash_flow(session: Session) -> None:
             date=datetime(2026, 6, 21),
             transaction_type=TransactionType.SPLIT,
             ticker="AAPL",
-            quantity=Decimal("4"),
+            quantity=4,
             price=Decimal("0"),
             fees=Decimal("0"),
         ),
     )
 
     assert transaction.type == TransactionType.SPLIT
-    assert transaction.quantity == Decimal("4")
+    assert transaction.quantity == 4
     assert transaction.total_value == Decimal("0")
 
 
@@ -158,7 +158,7 @@ def test_transaction_input_from_mapping_normalizes_aliases() -> None:
             "Symbol": " spy ",
             "Transaction Date": "2026-06-21",
             "Type": "BUY",
-            "Shares": "1.25",
+            "Shares": "2",
             "Price": "500.00",
             "Fee": "0.25",
             "Asset Class": "ETF",
@@ -167,8 +167,21 @@ def test_transaction_input_from_mapping_normalizes_aliases() -> None:
 
     assert transaction_input.ticker == "SPY"
     assert transaction_input.transaction_type == TransactionType.BUY
-    assert transaction_input.quantity == Decimal("1.25")
+    assert transaction_input.quantity == 2
     assert transaction_input.asset_class == AssetClass.ETF
+
+
+def test_transaction_input_rejects_fractional_quantity() -> None:
+    with pytest.raises(ValueError, match="Quantity must be an integer value"):
+        transaction_input_from_mapping(
+            {
+                "Date": "2026-06-21",
+                "Type": "BUY",
+                "Ticker": "SPY",
+                "Quantity": "1.25",
+                "Price": "500.00",
+            }
+        )
 
 
 def test_simulated_account_is_excluded_by_firewall_filter(session: Session) -> None:

@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from portfolio_management.db.base import Base
@@ -99,7 +99,7 @@ class AccountStrategy(Base):
 
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
     strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
-    allocation_weight: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False)
+    allocation_weight: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
 
     account: Mapped[Account] = relationship(back_populates="account_strategies")
     strategy: Mapped[Strategy] = relationship(back_populates="account_strategies")
@@ -138,12 +138,12 @@ class Transaction(Base):
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     type: Mapped[TransactionType] = mapped_column(Enum(TransactionType), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
-    quantity: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False, default=Decimal("0"))
-    price: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False, default=Decimal("0"))
-    fees: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False, default=Decimal("0"))
-    total_value: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False)
+    quantity: Mapped[int] = mapped_column(nullable=False, default=0)
+    price: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    fees: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    total_value: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
     currency_exchange_rate: Mapped[Decimal] = mapped_column(
-        SqliteDecimal(32),
+        Numeric(32, 10),
         nullable=False,
         default=Decimal("1"),
     )
@@ -157,7 +157,7 @@ class PriceHistory(Base):
 
     security_id: Mapped[int] = mapped_column(ForeignKey("securities.id"), primary_key=True)
     date: Mapped[date] = mapped_column(Date, primary_key=True)
-    close_price: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False)
+    close_price: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
 
     security: Mapped[Security] = relationship(back_populates="price_history")
 
@@ -172,7 +172,7 @@ class FxRateHistory(Base):
     base_currency_code: Mapped[str] = mapped_column(String(3), primary_key=True)
     quote_currency_code: Mapped[str] = mapped_column(String(3), primary_key=True)
     date: Mapped[date] = mapped_column(Date, primary_key=True)
-    rate: Mapped[Decimal] = mapped_column(SqliteDecimal(32), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(
