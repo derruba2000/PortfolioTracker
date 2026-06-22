@@ -4,6 +4,7 @@ from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
 
 import gradio as gr
+import pandas as pd
 
 from portfolio_management.config import load_settings
 from portfolio_management.db.init_db import initialize_database
@@ -60,15 +61,52 @@ def _parse_optional_date(raw_value: str) -> date_type | None:
     return date_type.fromisoformat(clean_value)
 
 
+def _as_date_table(dataframe: object, date_columns: list[str]) -> object:
+    if not isinstance(dataframe, pd.DataFrame):
+        return dataframe
+    formatted = dataframe.copy()
+    for column in date_columns:
+        if column in formatted.columns:
+            parsed = pd.to_datetime(formatted[column], errors="coerce")
+            formatted[column] = parsed.dt.date.where(parsed.notna(), None)
+    return formatted
+
+
+def _transactions_table() -> object:
+    return _as_date_table(list_transactions(), ["Date"])
+
+
+def _market_data_table() -> object:
+    return _as_date_table(market_data_summary(), ["Latest Date"])
+
+
+def _tax_report_table(tax_year: str, account_mode: str) -> object:
+    clean_year = (tax_year or "").strip()
+    report = realized_pnl_report(
+        tax_year=int(clean_year) if clean_year else None,
+        account_mode=account_mode,
+    )
+    return _as_date_table(report, ["Date"])
+
+
+def _tax_prep_table(tax_year: str, account_mode: str) -> object:
+    clean_year = (tax_year or "").strip()
+    report = tax_prep_report(
+        tax_year=int(clean_year) if clean_year else None,
+        account_mode=account_mode,
+    )
+    return _as_date_table(report, ["Date"])
+
+
 def _update_market_data_callback(start_date: str, end_date: str) -> tuple[str, object]:
     try:
         result = update_market_data(
             start_date=_parse_optional_date(start_date),
             end_date=_parse_optional_date(end_date),
         )
-        return result.message, market_data_summary()
+        return result.message, _market_data_table()
     except Exception as exc:
-        return f"Could not update market data: {exc}", market_data_summary()
+        return f"Could not update market data: {exc}", _market_data_table()
 
 
 def _mode_banner(account_mode: str) -> str:
@@ -119,11 +157,7 @@ def _refresh_dashboard(account_mode: str) -> tuple[str, object, object, object, 
 
 
 def _refresh_tax_report(tax_year: str, account_mode: str) -> object:
-    clean_year = (tax_year or "").strip()
-    return realized_pnl_report(
-        tax_year=int(clean_year) if clean_year else None,
-        account_mode=account_mode,
-    )
+    return _tax_report_table(tax_year, account_mode)
 
 
 def _refresh_performance(account_mode: str) -> object:
@@ -135,11 +169,7 @@ def _refresh_benchmark_overlay(benchmark_choice: str, account_mode: str) -> obje
 
 
 def _refresh_tax_prep_report(tax_year: str, account_mode: str) -> object:
-    clean_year = (tax_year or "").strip()
-    return tax_prep_report(
-        tax_year=int(clean_year) if clean_year else None,
-        account_mode=account_mode,
-    )
+    return _tax_prep_table(tax_year, account_mode)
 
 
 def _export_tax_prep_report(tax_year: str, account_mode: str) -> str:
@@ -303,7 +333,7 @@ def _add_manual_transaction(
     currency_exchange_rate: str,
 ) -> tuple[str, object]:
     if not portfolio_choice:
-        return "Choose a portfolio before adding a transaction.", list_transactions()
+        return "Choose a portfolio before adding a transaction.", _transactions_table()
 
     try:
         status = add_manual_transaction(
@@ -321,9 +351,9 @@ def _add_manual_transaction(
             total_value=total_value,
             currency_exchange_rate=currency_exchange_rate,
         )
-        return status, list_transactions()
+        return status, _transactions_table()
     except Exception as exc:
-        return f"Could not add transaction: {exc}", list_transactions()
+        return f"Could not add transaction: {exc}", _transactions_table()
 
 
 def _transfer_cash_between_accounts(
@@ -341,21 +371,21 @@ def _transfer_cash_between_accounts(
             transfer_date=transfer_date,
             description=transfer_description,
         )
-        return status, list_transactions()
+        return status, _transactions_table()
     except Exception as exc:
-        return f"Could not transfer cash: {exc}", list_transactions()
+        return f"Could not transfer cash: {exc}", _transactions_table()
 
 
 def _import_csv_to_portfolio(file: object, portfolio_choice: str) -> tuple[str, object]:
     if file is None:
-        return "Choose a CSV file to import.", list_transactions()
+        return "Choose a CSV file to import.", _transactions_table()
 
     try:
         file_path = getattr(file, "name", file)
         status = import_transactions_from_csv(file_path, portfolio_id=portfolio_choice)
-        return status, list_transactions()
+        return status, _transactions_table()
     except Exception as exc:
-        return f"Could not import CSV: {exc}", list_transactions()
+        return f"Could not import CSV: {exc}", _transactions_table()
 
 
 def build_app() -> gr.Blocks:
@@ -669,7 +699,7 @@ def build_app() -> gr.Blocks:
             transfer_cash_button = gr.Button("Transfer Cash")
 
             transactions = gr.Dataframe(
-                value=list_transactions,
+                value=_transactions_table,
                 headers=[
                     "ID",
                     "Date",
@@ -687,7 +717,7 @@ def build_app() -> gr.Blocks:
                 ],
                 datatype=[
                     "number",
-                    "str",
+                    "date",
                     "str",
                     "str",
                     "str",
@@ -701,6 +731,7 @@ def build_app() -> gr.Blocks:
                 ],
                 label="Transactions",
                 interactive=False,
+                show_fullscreen_button=True,
             )
 
             create_account_button.click(
@@ -786,11 +817,12 @@ def build_app() -> gr.Blocks:
                 market_end_date = gr.Textbox(label="End Date", placeholder="YYYY-MM-DD")
             update_market_data_button = gr.Button("Update Market Data", variant="primary")
             market_data_table = gr.Dataframe(
-                value=market_data_summary,
+                value=_market_data_table,
                 headers=["Type", "Symbol", "Name", "Currency", "Latest Date"],
-                datatype=["str", "str", "str", "str", "str"],
+                datatype=["str", "str", "str", "str", "date"],
                 label="Stored Market Data",
                 interactive=False,
+                show_fullscreen_button=True,
             )
             update_market_data_button.click(
                 fn=_update_market_data_callback,
@@ -834,7 +866,7 @@ def build_app() -> gr.Blocks:
         with gr.Tab("Tax"):
             tax_year = gr.Textbox(label="Tax Year", placeholder="YYYY")
             tax_report = gr.Dataframe(
-                value=lambda: realized_pnl_report(account_mode=LIVE_MODE),
+                value=lambda: _tax_report_table("", LIVE_MODE),
                 headers=[
                     "Date",
                     "Broker",
@@ -846,9 +878,10 @@ def build_app() -> gr.Blocks:
                     "Cost Basis",
                     "Realized P&L",
                 ],
-                datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                datatype=["date", "str", "str", "str", "str", "str", "str", "str", "str"],
                 label="Realized Gains",
                 interactive=False,
+                show_fullscreen_button=True,
             )
             refresh_tax_button = gr.Button("Refresh Tax Report")
             refresh_tax_button.click(
@@ -857,7 +890,7 @@ def build_app() -> gr.Blocks:
                 outputs=[tax_report],
             )
             tax_prep_table = gr.Dataframe(
-                value=lambda: tax_prep_report(account_mode=LIVE_MODE),
+                value=lambda: _tax_prep_table("", LIVE_MODE),
                 headers=[
                     "Type",
                     "Date",
@@ -869,9 +902,10 @@ def build_app() -> gr.Blocks:
                     "Cost Basis",
                     "Realized P&L",
                 ],
-                datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                datatype=["str", "date", "str", "str", "str", "str", "str", "str", "str"],
                 label="Tax Prep Report",
                 interactive=False,
+                show_fullscreen_button=True,
             )
             tax_export = gr.File(label="Tax CSV Export", interactive=False)
             with gr.Row():
