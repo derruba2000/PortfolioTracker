@@ -1,0 +1,640 @@
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from datetime import date, timedelta
+from decimal import Decimal
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from portfolio_management.db.models import (
+    Account,
+    Broker,
+    FxRateHistory,
+    Portfolio,
+    PriceHistory,
+    Security,
+    Transaction,
+    TransactionType,
+)
+from portfolio_management.db.session import get_session_factory
+
+LIVE_MODE = "Live Mode"
+SANDBOX_MODE = "Sandbox Mode"
+
+
+@dataclass
+class Lot:
+    quantity: Decimal
+    unit_cost: Decimal
+    acquired_date: date
+
+
+def current_positions(
+    include_simulated: bool = False,
+    account_mode: str = LIVE_MODE,
+) -> pd.DataFrame:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = _load_transaction_rows(
+            session,
+            include_simulated=include_simulated,
+            account_mode=account_mode,
+        )
+        records = _calculate_position_records(session, rows)
+    return pd.DataFrame(
+        records,
+        columns=[
+            "Broker",
+            "Account",
+            "Portfolio",
+            "Ticker",
+            "Name",
+            "Asset Class",
+            "Currency",
+            "Quantity",
+            "Average Cost",
+            "Latest Price",
+            "Market Value",
+            "Unrealized P&L",
+        ],
+    )
+
+
+def realized_pnl_report(
+    tax_year: int | None = None,
+    include_simulated: bool = False,
+    account_mode: str = LIVE_MODE,
+) -> pd.DataFrame:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = _load_transaction_rows(
+            session,
+            include_simulated=include_simulated,
+            account_mode=account_mode,
+        )
+    records = _calculate_realized_pnl_records(rows, tax_year=tax_year)
+    return pd.DataFrame(
+        records,
+        columns=[
+            "Date",
+            "Broker",
+            "Account",
+            "Portfolio",
+            "Ticker",
+            "Quantity Sold",
+            "Proceeds",
+            "Cost Basis",
+            "Realized P&L",
+        ],
+    )
+
+
+def tax_prep_report(
+    tax_year: int | None = None,
+    account_mode: str = LIVE_MODE,
+) -> pd.DataFrame:
+    realized = realized_pnl_report(tax_year=tax_year, account_mode=account_mode)
+    records = [
+        {
+            "Type": "REALIZED_GAIN",
+            "Date": row["Date"],
+            "Broker": row["Broker"],
+            "Account": row["Account"],
+            "Portfolio": row["Portfolio"],
+            "Ticker": row["Ticker"],
+            "Amount": row["Proceeds"],
+            "Cost Basis": row["Cost Basis"],
+            "Realized P&L": row["Realized P&L"],
+        }
+        for _, row in realized.iterrows()
+    ]
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = _load_transaction_rows(
+            session,
+            include_simulated=False,
+            account_mode=account_mode,
+        )
+
+    for transaction, portfolio, account, broker, security in rows:
+        if transaction.type != TransactionType.DIVIDEND:
+            continue
+        if tax_year is not None and transaction.date.year != tax_year:
+            continue
+        records.append(
+            {
+                "Type": "DIVIDEND",
+                "Date": transaction.date.date().isoformat(),
+                "Broker": broker.name,
+                "Account": account.name,
+                "Portfolio": portfolio.name,
+                "Ticker": security.ticker if security else "",
+                "Amount": str(transaction.total_value),
+                "Cost Basis": "",
+                "Realized P&L": "",
+            }
+        )
+
+    return pd.DataFrame(
+        records,
+        columns=[
+            "Type",
+            "Date",
+            "Broker",
+            "Account",
+            "Portfolio",
+            "Ticker",
+            "Amount",
+            "Cost Basis",
+            "Realized P&L",
+        ],
+    )
+
+
+def export_tax_prep_report_csv(
+    tax_year: int | None = None,
+    account_mode: str = LIVE_MODE,
+) -> str:
+    report = tax_prep_report(tax_year=tax_year, account_mode=account_mode)
+    with NamedTemporaryFile(
+        mode="w",
+        suffix=".csv",
+        prefix="portfolio_tax_report_",
+        delete=False,
+        newline="",
+    ) as file:
+        report.to_csv(file.name, index=False)
+        return str(Path(file.name))
+
+
+def twr_curve(
+    include_simulated: bool = False,
+    account_mode: str = LIVE_MODE,
+) -> pd.DataFrame:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = _load_transaction_rows(
+            session,
+            include_simulated=include_simulated,
+            account_mode=account_mode,
+        )
+        if not rows:
+            return pd.DataFrame(columns=["Date", "TWR"])
+        start_date = min(transaction.date.date() for transaction, *_ in rows)
+        end_date = date.today()
+        values = _portfolio_values_by_day(session, rows, start_date, end_date)
+        cash_flows = _external_cash_flows_by_day(rows)
+
+    linked_return = Decimal("1")
+    previous_value: Decimal | None = None
+    records: list[dict[str, str]] = []
+
+    current_date = start_date
+    while current_date <= end_date:
+        end_value = values.get(current_date, Decimal("0"))
+        flow = cash_flows.get(current_date, Decimal("0"))
+
+        if previous_value is not None and previous_value != 0:
+            period_return = (end_value - flow - previous_value) / previous_value
+            linked_return *= Decimal("1") + period_return
+
+        records.append(
+            {
+                "Date": current_date.isoformat(),
+                "TWR": str(linked_return - Decimal("1")),
+            }
+        )
+        previous_value = end_value
+        current_date += timedelta(days=1)
+
+    return pd.DataFrame(records, columns=["Date", "TWR"])
+
+
+def dashboard_summary(
+    include_simulated: bool = False,
+    account_mode: str = LIVE_MODE,
+) -> pd.DataFrame:
+    positions = current_positions(
+        include_simulated=include_simulated,
+        account_mode=account_mode,
+    )
+    if positions.empty:
+        total_market_value = Decimal("0")
+        total_unrealized = Decimal("0")
+    else:
+        total_market_value = sum(_decimal_or_zero(value) for value in positions["Market Value"])
+        total_unrealized = sum(_decimal_or_zero(value) for value in positions["Unrealized P&L"])
+
+    return pd.DataFrame(
+        [
+            {"Metric": "Market Value", "Value": str(total_market_value)},
+            {"Metric": "Unrealized P&L", "Value": str(total_unrealized)},
+        ],
+        columns=["Metric", "Value"],
+    )
+
+
+def allocation_by_asset_class(account_mode: str = LIVE_MODE) -> pd.DataFrame:
+    positions = current_positions(account_mode=account_mode)
+    if positions.empty:
+        return pd.DataFrame(columns=["Asset Class", "Market Value"])
+    rows = []
+    for _, row in positions.iterrows():
+        rows.append(
+            {
+                "Asset Class": row["Asset Class"],
+                "Market Value": float(_decimal_or_zero(row["Market Value"])),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .groupby("Asset Class", as_index=False)["Market Value"]
+        .sum()
+        .sort_values("Asset Class")
+    )
+
+
+def allocation_by_currency(account_mode: str = LIVE_MODE) -> pd.DataFrame:
+    positions = current_positions(account_mode=account_mode)
+    if positions.empty:
+        return pd.DataFrame(columns=["Currency", "Market Value"])
+    rows = [
+        {
+            "Currency": row["Currency"],
+            "Market Value": float(_decimal_or_zero(row["Market Value"])),
+        }
+        for _, row in positions.iterrows()
+    ]
+    return (
+        pd.DataFrame(rows)
+        .groupby("Currency", as_index=False)["Market Value"]
+        .sum()
+        .sort_values("Currency")
+    )
+
+
+def _load_transaction_rows(
+    session: Session,
+    include_simulated: bool,
+    account_mode: str = LIVE_MODE,
+) -> list[tuple[Transaction, Portfolio, Account, Broker, Security | None]]:
+    statement = (
+        select(Transaction, Portfolio, Account, Broker, Security)
+        .join(Transaction.portfolio)
+        .join(Portfolio.account)
+        .join(Account.broker)
+        .join(Transaction.security, isouter=True)
+        .order_by(Transaction.date, Transaction.id)
+    )
+    if account_mode == SANDBOX_MODE:
+        statement = statement.where(Account.is_simulated.is_(True))
+    elif not include_simulated:
+        statement = statement.where(Account.is_simulated.is_(False))
+    return list(session.execute(statement).all())
+
+
+def _calculate_position_records(
+    session: Session,
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+) -> list[dict[str, str]]:
+    security_state: dict[tuple[int, int], dict[str, object]] = {}
+    cash_state: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
+
+    for transaction, portfolio, account, broker, security in rows:
+        if security is None:
+            _apply_cash_transaction(cash_state, transaction, portfolio, account)
+            continue
+
+        key = (portfolio.id, security.id)
+        state = security_state.setdefault(
+            key,
+            {
+                "broker": broker,
+                "account": account,
+                "portfolio": portfolio,
+                "security": security,
+                "quantity": Decimal("0"),
+                "cost_basis": Decimal("0"),
+            },
+        )
+        _apply_security_transaction(state, transaction)
+        _apply_cash_transaction(cash_state, transaction, portfolio, account)
+
+    records: list[dict[str, str]] = []
+    for state in security_state.values():
+        quantity = state["quantity"]
+        cost_basis = state["cost_basis"]
+        if not isinstance(quantity, Decimal) or quantity == 0:
+            continue
+        if not isinstance(cost_basis, Decimal):
+            continue
+
+        broker = state["broker"]
+        account = state["account"]
+        portfolio = state["portfolio"]
+        security = state["security"]
+        if not isinstance(broker, Broker) or not isinstance(account, Account):
+            continue
+        if not isinstance(portfolio, Portfolio) or not isinstance(security, Security):
+            continue
+
+        latest_price = _latest_price(session, security)
+        market_value = quantity * latest_price if latest_price is not None else Decimal("0")
+        average_cost = cost_basis / quantity if quantity else Decimal("0")
+        unrealized = market_value - cost_basis if latest_price is not None else Decimal("0")
+
+        records.append(
+            {
+                "Broker": broker.name,
+                "Account": account.name,
+                "Portfolio": portfolio.name,
+                "Ticker": security.ticker,
+                "Name": security.name,
+                "Asset Class": security.asset_class.value,
+                "Currency": security.currency_code,
+                "Quantity": str(quantity),
+                "Average Cost": str(average_cost),
+                "Latest Price": str(latest_price) if latest_price is not None else "",
+                "Market Value": str(market_value),
+                "Unrealized P&L": str(unrealized),
+            }
+        )
+
+    for (portfolio_id, currency_code), balance in cash_state.items():
+        if balance == 0:
+            continue
+        portfolio_row = next((row for row in rows if row[1].id == portfolio_id), None)
+        if portfolio_row is None:
+            continue
+        _, portfolio, account, broker, _ = portfolio_row
+        records.append(
+            {
+                "Broker": broker.name,
+                "Account": account.name,
+                "Portfolio": portfolio.name,
+                "Ticker": "CASH",
+                "Name": f"{currency_code} Cash",
+                "Asset Class": "CASH",
+                "Currency": currency_code,
+                "Quantity": str(balance),
+                "Average Cost": "1",
+                "Latest Price": "1",
+                "Market Value": str(balance),
+                "Unrealized P&L": "0",
+            }
+        )
+
+    return records
+
+
+def _calculate_realized_pnl_records(
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+    tax_year: int | None,
+) -> list[dict[str, str]]:
+    lots_by_security: defaultdict[tuple[int, int], deque[Lot]] = defaultdict(deque)
+    records: list[dict[str, str]] = []
+
+    for transaction, portfolio, account, broker, security in rows:
+        if security is None:
+            continue
+
+        key = (portfolio.id, security.id)
+        lots = lots_by_security[key]
+
+        if transaction.type == TransactionType.BUY:
+            lots.append(
+                Lot(
+                    quantity=transaction.quantity,
+                    unit_cost=transaction.total_value / transaction.quantity,
+                    acquired_date=transaction.date.date(),
+                )
+            )
+        elif transaction.type == TransactionType.SPLIT:
+            _apply_split_to_lots(lots, transaction.quantity)
+        elif transaction.type == TransactionType.SELL:
+            if tax_year is not None and transaction.date.year != tax_year:
+                _consume_lots(lots, transaction.quantity)
+                continue
+
+            quantity_to_sell = transaction.quantity
+            cost_basis = Decimal("0")
+            while quantity_to_sell > 0 and lots:
+                lot = lots[0]
+                matched_quantity = min(quantity_to_sell, lot.quantity)
+                cost_basis += matched_quantity * lot.unit_cost
+                lot.quantity -= matched_quantity
+                quantity_to_sell -= matched_quantity
+                if lot.quantity == 0:
+                    lots.popleft()
+
+            proceeds = transaction.total_value
+            records.append(
+                {
+                    "Date": transaction.date.date().isoformat(),
+                    "Broker": broker.name,
+                    "Account": account.name,
+                    "Portfolio": portfolio.name,
+                    "Ticker": security.ticker,
+                    "Quantity Sold": str(transaction.quantity),
+                    "Proceeds": str(proceeds),
+                    "Cost Basis": str(cost_basis),
+                    "Realized P&L": str(proceeds - cost_basis),
+                }
+            )
+
+    return records
+
+
+def _portfolio_values_by_day(
+    session: Session,
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+    start_date: date,
+    end_date: date,
+) -> dict[date, Decimal]:
+    values: dict[date, Decimal] = {}
+    current_date = start_date
+    while current_date <= end_date:
+        values[current_date] = _portfolio_value_on_date(session, rows, current_date)
+        current_date += timedelta(days=1)
+    return values
+
+
+def _portfolio_value_on_date(
+    session: Session,
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+    as_of_date: date,
+) -> Decimal:
+    quantities: defaultdict[int, Decimal] = defaultdict(Decimal)
+    cash_by_currency: defaultdict[str, Decimal] = defaultdict(Decimal)
+
+    for transaction, _, account, _, security in rows:
+        if transaction.date.date() > as_of_date:
+            continue
+
+        if security is None:
+            _apply_cash_to_currency(cash_by_currency, transaction, account.currency_code)
+            continue
+
+        if transaction.type == TransactionType.BUY:
+            quantities[security.id] += transaction.quantity
+            cash_by_currency[account.currency_code] -= _convert_to_account_currency(
+                session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
+            )
+        elif transaction.type == TransactionType.SELL:
+            quantities[security.id] -= transaction.quantity
+            cash_by_currency[account.currency_code] += _convert_to_account_currency(
+                session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
+            )
+        elif transaction.type == TransactionType.DIVIDEND:
+            cash_by_currency[account.currency_code] += _convert_to_account_currency(
+                session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
+            )
+        elif transaction.type == TransactionType.SPLIT:
+            quantities[security.id] *= transaction.quantity
+
+    value = sum(cash_by_currency.values(), Decimal("0"))
+    for security_id, quantity in quantities.items():
+        if quantity == 0:
+            continue
+        security = session.get(Security, security_id)
+        if security is None:
+            continue
+        latest_price = _latest_price(session, security, as_of_date=as_of_date)
+        if latest_price is None:
+            continue
+        value += quantity * latest_price
+    return value
+
+
+def _external_cash_flows_by_day(
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+) -> defaultdict[date, Decimal]:
+    cash_flows: defaultdict[date, Decimal] = defaultdict(Decimal)
+    for transaction, _, _, _, security in rows:
+        if security is not None:
+            continue
+        if transaction.type == TransactionType.DEPOSIT:
+            cash_flows[transaction.date.date()] += transaction.total_value
+        elif transaction.type == TransactionType.WITHDRAWAL:
+            cash_flows[transaction.date.date()] -= abs(transaction.total_value)
+    return cash_flows
+
+
+def _apply_security_transaction(state: dict[str, object], transaction: Transaction) -> None:
+    quantity = state["quantity"]
+    cost_basis = state["cost_basis"]
+    if not isinstance(quantity, Decimal) or not isinstance(cost_basis, Decimal):
+        return
+
+    if transaction.type == TransactionType.BUY:
+        quantity += transaction.quantity
+        cost_basis += transaction.total_value
+    elif transaction.type == TransactionType.SELL:
+        average_cost = cost_basis / quantity if quantity else Decimal("0")
+        cost_basis -= average_cost * transaction.quantity
+        quantity -= transaction.quantity
+    elif transaction.type == TransactionType.SPLIT:
+        quantity *= transaction.quantity
+
+    state["quantity"] = quantity
+    state["cost_basis"] = cost_basis
+
+
+def _apply_cash_transaction(
+    cash_state: defaultdict[tuple[int, str], Decimal],
+    transaction: Transaction,
+    portfolio: Portfolio,
+    account: Account,
+) -> None:
+    key = (portfolio.id, account.currency_code)
+    if transaction.security_id is None:
+        _apply_cash_to_portfolio(cash_state, key, transaction)
+
+
+def _apply_cash_to_portfolio(
+    cash_state: defaultdict[tuple[int, str], Decimal],
+    key: tuple[int, str],
+    transaction: Transaction,
+) -> None:
+    if transaction.type == TransactionType.DEPOSIT:
+        cash_state[key] += transaction.total_value
+    elif transaction.type == TransactionType.WITHDRAWAL:
+        cash_state[key] -= abs(transaction.total_value)
+
+
+def _apply_cash_to_currency(
+    cash_by_currency: defaultdict[str, Decimal],
+    transaction: Transaction,
+    currency_code: str,
+) -> None:
+    if transaction.type == TransactionType.DEPOSIT:
+        cash_by_currency[currency_code] += transaction.total_value
+    elif transaction.type == TransactionType.WITHDRAWAL:
+        cash_by_currency[currency_code] -= abs(transaction.total_value)
+
+
+def _apply_split_to_lots(lots: deque[Lot], split_ratio: Decimal) -> None:
+    for lot in lots:
+        lot.quantity *= split_ratio
+        lot.unit_cost /= split_ratio
+
+
+def _consume_lots(lots: deque[Lot], quantity: Decimal) -> None:
+    quantity_to_consume = quantity
+    while quantity_to_consume > 0 and lots:
+        lot = lots[0]
+        matched_quantity = min(quantity_to_consume, lot.quantity)
+        lot.quantity -= matched_quantity
+        quantity_to_consume -= matched_quantity
+        if lot.quantity == 0:
+            lots.popleft()
+
+
+def _latest_price(
+    session: Session,
+    security: Security,
+    as_of_date: date | None = None,
+) -> Decimal | None:
+    statement = select(PriceHistory).where(PriceHistory.security_id == security.id)
+    if as_of_date is not None:
+        statement = statement.where(PriceHistory.date <= as_of_date)
+    price = session.scalar(statement.order_by(PriceHistory.date.desc()).limit(1))
+    return price.close_price if price else None
+
+
+def _convert_to_account_currency(
+    session: Session,
+    value: Decimal,
+    security_currency: str,
+    account_currency: str,
+    as_of_date: date,
+) -> Decimal:
+    if security_currency == account_currency:
+        return value
+
+    rate = session.scalar(
+        select(FxRateHistory)
+        .where(
+            FxRateHistory.base_currency_code == security_currency,
+            FxRateHistory.quote_currency_code == account_currency,
+            FxRateHistory.date <= as_of_date,
+        )
+        .order_by(FxRateHistory.date.desc())
+        .limit(1)
+    )
+    if rate is None:
+        return value
+    return value * rate.rate
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")

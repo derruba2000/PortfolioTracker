@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "portfolio-management"
+version = "0.1.0"
+description = "Local portfolio management app with SQLite, SQLAlchemy, Pandas, and Gradio."
+authors = ["joaoramo"]
+readme = "README.md"
+packages = [{ include = "portfolio_management", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+gradio = "^5.49.1"
+pandas = "^2.3.0"
+python-dotenv = "^1.1.0"
+sqlalchemy = "^2.0.41"
+yfinance = "^1.4.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.0"
+
+[tool.poetry.scripts]
+portfolio-app = "portfolio_management.app:main"
+portfolio-init-db = "portfolio_management.db.init_db:main"
+portfolio-seed-db = "portfolio_management.db.seed:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
