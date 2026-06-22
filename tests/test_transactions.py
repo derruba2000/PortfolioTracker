@@ -6,7 +6,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from portfolio_management.db.base import Base
 from portfolio_management.db.models import (
@@ -23,6 +23,7 @@ from portfolio_management.services.transactions import (
     TransactionInput,
     create_transaction,
     import_transactions_from_dataframe,
+    transfer_cash,
     transaction_input_from_mapping,
 )
 
@@ -205,3 +206,66 @@ def test_simulated_account_is_excluded_by_firewall_filter(session: Session) -> N
     accounts = session.scalars(statement).all()
 
     assert [account.name for account in accounts] == ["Real"]
+
+
+def test_transfer_cash_creates_withdrawal_and_deposit(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.transactions.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        source_account = Account(broker=broker, name="Source", currency_code="USD")
+        target_account = Account(broker=broker, name="Target", currency_code="USD")
+        session.add_all([source_account, target_account])
+        session.commit()
+
+    status = transfer_cash(
+        source_account_choice=1,
+        target_account_choice=2,
+        amount="150.25",
+        transfer_date="2026-06-22",
+        description="Top up",
+    )
+
+    with Session(engine) as session:
+        transactions = session.scalars(select(Transaction).order_by(Transaction.id)).all()
+
+    assert "Transferred 150.25 USD" in status
+    assert len(transactions) == 2
+    assert transactions[0].type == TransactionType.WITHDRAWAL
+    assert transactions[1].type == TransactionType.DEPOSIT
+    assert transactions[0].total_value == Decimal("-150.25")
+    assert transactions[1].total_value == Decimal("150.25")
+    assert "source account: Source" in (transactions[0].description or "")
+    assert "target account: Target" in (transactions[0].description or "")
+    assert "cash transferred: 150.25" in (transactions[0].description or "")
+
+
+def test_transfer_cash_requires_matching_currency(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.transactions.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        source_account = Account(broker=broker, name="Source", currency_code="USD")
+        target_account = Account(broker=broker, name="Target", currency_code="EUR")
+        session.add_all([source_account, target_account])
+        session.commit()
+
+    with pytest.raises(ValueError, match="same currency code"):
+        transfer_cash(
+            source_account_choice=1,
+            target_account_choice=2,
+            amount="10",
+            transfer_date="2026-06-22",
+        )

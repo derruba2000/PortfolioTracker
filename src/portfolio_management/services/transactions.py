@@ -136,6 +136,84 @@ def add_manual_transaction(**raw_values: Any) -> str:
     return f"Added transaction #{transaction.id}: {transaction_input.transaction_type.value} {ticker}"
 
 
+def transfer_cash(
+    source_account_choice: str | int | None,
+    target_account_choice: str | int | None,
+    amount: str | Decimal,
+    transfer_date: Any,
+    description: str = "",
+) -> str:
+    source_account_id = parse_choice_id(source_account_choice)
+    target_account_id = parse_choice_id(target_account_choice)
+
+    if source_account_id is None or target_account_id is None:
+        raise ValueError("Source and target accounts are required.")
+    if source_account_id == target_account_id:
+        raise ValueError("Source and target accounts must be different.")
+
+    transfer_amount = _parse_decimal(amount, default=Decimal("0"))
+    if transfer_amount <= 0:
+        raise ValueError("Transfer amount must be greater than zero.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        source_account = session.get(Account, source_account_id)
+        target_account = session.get(Account, target_account_id)
+        if source_account is None or target_account is None:
+            raise ValueError("Source or target account does not exist.")
+
+        if source_account.currency_code != target_account.currency_code:
+            raise ValueError("Source and target accounts must have the same currency code.")
+
+        source_portfolio = get_or_create_portfolio(session, source_account, DEFAULT_PORTFOLIO_NAME)
+        target_portfolio = get_or_create_portfolio(session, target_account, DEFAULT_PORTFOLIO_NAME)
+
+        parsed_transfer_date = _parse_datetime(transfer_date)
+        transfer_note = (
+            f"Cash transfer | source account: {source_account.name} | "
+            f"target account: {target_account.name} | cash transferred: {transfer_amount}"
+        )
+        user_description = _clean_string(description)
+        if user_description:
+            transfer_note = f"{transfer_note} | note: {user_description}"
+
+        withdrawal = create_transaction(
+            session,
+            TransactionInput(
+                portfolio_id=source_portfolio.id,
+                date=parsed_transfer_date,
+                transaction_type=TransactionType.WITHDRAWAL,
+                ticker=None,
+                quantity=1,
+                price=transfer_amount,
+                fees=Decimal("0"),
+                currency_exchange_rate=Decimal("1"),
+                description=transfer_note,
+            ),
+        )
+        deposit = create_transaction(
+            session,
+            TransactionInput(
+                portfolio_id=target_portfolio.id,
+                date=parsed_transfer_date,
+                transaction_type=TransactionType.DEPOSIT,
+                ticker=None,
+                quantity=1,
+                price=transfer_amount,
+                fees=Decimal("0"),
+                currency_exchange_rate=Decimal("1"),
+                description=transfer_note,
+            ),
+        )
+        session.commit()
+
+    return (
+        f"Transferred {transfer_amount} {source_account.currency_code} from "
+        f"'{source_account.name}' to '{target_account.name}' "
+        f"(transactions #{withdrawal.id} and #{deposit.id})."
+    )
+
+
 def import_transactions_from_dataframe(
     session: Session,
     dataframe: pd.DataFrame,

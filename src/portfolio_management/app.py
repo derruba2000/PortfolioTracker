@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date as date_type
+from decimal import Decimal, InvalidOperation
 
 import gradio as gr
 
@@ -48,6 +49,7 @@ from portfolio_management.services.transactions import (
     add_manual_transaction,
     import_transactions_from_csv,
     list_transactions,
+    transfer_cash,
 )
 
 
@@ -83,11 +85,34 @@ def _mode_banner(account_mode: str) -> str:
     )
 
 
+def _format_two_decimals(value: object) -> str:
+    try:
+        return f"{Decimal(str(value)):.2f}"
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+
+
+def _dashboard_positions(account_mode: str) -> object:
+    positions = current_positions(account_mode=account_mode).copy()
+    for column in ["Quantity", "Market Value", "Unrealized P&L"]:
+        if column in positions.columns:
+            positions[column] = positions[column].map(_format_two_decimals)
+    return positions
+
+
+def _rebalance_positions(account_choice: str, account_mode: str) -> object:
+    rebalance = rebalance_report(account_choice, account_mode=account_mode).copy()
+    for column in ["Current Value", "Trade Value"]:
+        if column in rebalance.columns:
+            rebalance[column] = rebalance[column].map(_format_two_decimals)
+    return rebalance
+
+
 def _refresh_dashboard(account_mode: str) -> tuple[str, object, object, object, object]:
     return (
         _mode_banner(account_mode),
         dashboard_summary(account_mode=account_mode),
-        current_positions(account_mode=account_mode),
+        _dashboard_positions(account_mode=account_mode),
         allocation_by_asset_class(account_mode=account_mode),
         allocation_by_currency(account_mode=account_mode),
     )
@@ -142,14 +167,14 @@ def _set_target_allocation(
     return (
         status,
         target_allocations(account_choice),
-        rebalance_report(account_choice, account_mode=account_mode),
+        _rebalance_positions(account_choice, account_mode=account_mode),
     )
 
 
 def _refresh_rebalance(account_choice: str, account_mode: str) -> tuple[object, object]:
     return (
         target_allocations(account_choice),
-        rebalance_report(account_choice, account_mode=account_mode),
+        _rebalance_positions(account_choice, account_mode=account_mode),
     )
 
 
@@ -301,6 +326,26 @@ def _add_manual_transaction(
         return f"Could not add transaction: {exc}", list_transactions()
 
 
+def _transfer_cash_between_accounts(
+    source_account_choice: str,
+    target_account_choice: str,
+    amount: str,
+    transfer_date: str,
+    transfer_description: str,
+) -> tuple[str, object]:
+    try:
+        status = transfer_cash(
+            source_account_choice=source_account_choice,
+            target_account_choice=target_account_choice,
+            amount=amount,
+            transfer_date=transfer_date,
+            description=transfer_description,
+        )
+        return status, list_transactions()
+    except Exception as exc:
+        return f"Could not transfer cash: {exc}", list_transactions()
+
+
 def _import_csv_to_portfolio(file: object, portfolio_choice: str) -> tuple[str, object]:
     if file is None:
         return "Choose a CSV file to import.", list_transactions()
@@ -338,7 +383,7 @@ def build_app() -> gr.Blocks:
                 interactive=False,
             )
             positions_table = gr.Dataframe(
-                value=lambda: current_positions(account_mode=LIVE_MODE),
+                value=lambda: _dashboard_positions(account_mode=LIVE_MODE),
                 headers=[
                     "Broker",
                     "Account",
@@ -421,7 +466,7 @@ def build_app() -> gr.Blocks:
                 interactive=False,
             )
             rebalance_table = gr.Dataframe(
-                value=lambda: rebalance_report(
+                value=lambda: _rebalance_positions(
                     selected_rebalance_account,
                     account_mode=LIVE_MODE,
                 ),
@@ -568,7 +613,12 @@ def build_app() -> gr.Blocks:
                 )
 
             with gr.Row():
-                date = gr.Textbox(label="Date", placeholder="YYYY-MM-DD")
+                date = gr.DateTime(
+                    label="Date",
+                    include_time=False,
+                    type="string",
+                    value=lambda: date_type.today().isoformat(),
+                )
                 transaction_type = gr.Dropdown(
                     label="Type",
                     choices=[transaction_type.value for transaction_type in TransactionType],
@@ -599,6 +649,24 @@ def build_app() -> gr.Blocks:
 
             csv_file = gr.File(label="CSV Import", file_types=[".csv"])
             import_button = gr.Button("Import CSV")
+
+            with gr.Row():
+                transfer_source_account = gr.Dropdown(
+                    label="Transfer Source Account",
+                    choices=account_choices(include_simulated=True),
+                    value=selected_account,
+                )
+                transfer_target_account = gr.Dropdown(
+                    label="Transfer Target Account",
+                    choices=account_choices(include_simulated=True),
+                    value=selected_account,
+                )
+
+            with gr.Row():
+                transfer_amount = gr.Textbox(label="Transfer Amount")
+                transfer_description = gr.Textbox(label="Transfer Description")
+
+            transfer_cash_button = gr.Button("Transfer Cash")
 
             transactions = gr.Dataframe(
                 value=list_transactions,
@@ -691,6 +759,17 @@ def build_app() -> gr.Blocks:
                     fees,
                     total_value,
                     currency_exchange_rate,
+                ],
+                outputs=[status, transactions],
+            )
+            transfer_cash_button.click(
+                fn=_transfer_cash_between_accounts,
+                inputs=[
+                    transfer_source_account,
+                    transfer_target_account,
+                    transfer_amount,
+                    date,
+                    transfer_description,
                 ],
                 outputs=[status, transactions],
             )
