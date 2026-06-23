@@ -42,10 +42,86 @@ def create_account(
     return f"Created {account_type} account '{account.name}'."
 
 
+def create_broker(
+    broker_name: str,
+    description: str = "",
+) -> str:
+    clean_name = (broker_name or "").strip()
+    if not clean_name:
+        raise ValueError("Broker is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        broker = get_or_create_broker(
+            session,
+            clean_name,
+            description=(description or "").strip() or None,
+        )
+        broker.is_active = True
+        session.commit()
+
+    return f"Saved broker '{broker.name}'."
+
+
+def update_broker(
+    broker_choice: str | int | None,
+    broker_name: str,
+    description: str,
+    is_active: bool,
+) -> str:
+    broker_id = parse_choice_id(broker_choice)
+    if broker_id is None:
+        raise ValueError("Broker is required.")
+
+    clean_name = (broker_name or "").strip()
+    if not clean_name:
+        raise ValueError("Broker name is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        broker = session.get(Broker, broker_id)
+        if broker is None:
+            raise ValueError(f"Broker id {broker_id} does not exist.")
+
+        duplicate = session.scalar(
+            select(Broker).where(Broker.name == clean_name, Broker.id != broker_id)
+        )
+        if duplicate is not None:
+            raise ValueError(f"Broker '{clean_name}' already exists.")
+
+        broker.name = clean_name
+        broker.description = (description or "").strip() or None
+        broker.is_active = bool(is_active)
+        session.commit()
+
+    status = "enabled" if broker.is_active else "disabled"
+    return f"Updated broker '{broker.name}' ({status})."
+
+
+def delete_broker(broker_choice: str | int | None) -> str:
+    broker_id = parse_choice_id(broker_choice)
+    if broker_id is None:
+        raise ValueError("Broker is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        broker = session.get(Broker, broker_id)
+        if broker is None:
+            raise ValueError(f"Broker id {broker_id} does not exist.")
+        if broker.accounts:
+            raise ValueError("Broker has accounts and cannot be removed.")
+        broker_name = broker.name
+        session.delete(broker)
+        session.commit()
+
+    return f"Deleted broker '{broker_name}'."
+
+
 def create_portfolio(
     account_choice: str | int | None,
     portfolio_name: str,
     description: str = "",
+    portfolio_url: str = "",
 ) -> str:
     account_id = parse_choice_id(account_choice)
     if account_id is None:
@@ -63,10 +139,34 @@ def create_portfolio(
             account,
             portfolio_name.strip(),
             description=description.strip() or None,
+            portfolio_url=portfolio_url.strip() or None,
         )
         session.commit()
 
     return f"Created portfolio '{portfolio.name}' for account '{account.name}'."
+
+
+def broker_choices(include_inactive: bool = False) -> list[str]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        statement = select(Broker).order_by(Broker.name)
+        if not include_inactive:
+            statement = statement.where(Broker.is_active.is_(True))
+        rows = session.scalars(statement).all()
+    return [_broker_label(broker, include_status=include_inactive) for broker in rows]
+
+
+def broker_details(broker_choice: str | int | None) -> tuple[str, str, bool]:
+    broker_id = parse_choice_id(broker_choice)
+    if broker_id is None:
+        return "", "", True
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        broker = session.get(Broker, broker_id)
+        if broker is None:
+            return "", "", True
+        return broker.name, broker.description or "", bool(broker.is_active)
 
 
 def create_account_with_portfolio(
@@ -78,6 +178,7 @@ def create_account_with_portfolio(
     is_simulated: bool = False,
     portfolio_name: str = DEFAULT_PORTFOLIO_NAME,
     portfolio_description: str = "",
+    portfolio_url: str = "",
 ) -> str:
     create_account(
         broker_name=broker_name,
@@ -91,6 +192,7 @@ def create_account_with_portfolio(
         account_choice=_find_account_choice(broker_name, account_name),
         portfolio_name=portfolio_name,
         description=portfolio_description,
+        portfolio_url=portfolio_url,
     )
 
 
@@ -105,6 +207,27 @@ def account_description(account_choice: str | int | None) -> str:
         if account is None:
             return ""
         return account.description or ""
+
+
+def account_details(account_choice: str | int | None) -> tuple[str, str, str, str, str, bool, bool]:
+    account_id = parse_choice_id(account_choice)
+    if account_id is None:
+        return "", "", "GBP", "", "", False, True
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            return "", "", "GBP", "", "", False, True
+        return (
+            account.broker.name,
+            account.name,
+            account.currency_code,
+            account.description or "",
+            account.tax_wrapper_type or "",
+            bool(account.is_simulated),
+            bool(account.is_active),
+        )
 
 
 def update_account_description(
@@ -126,12 +249,133 @@ def update_account_description(
     return f"Updated account description for '{account.name}'."
 
 
-def get_or_create_broker(session: Session, name: str) -> Broker:
+def update_account(
+    account_choice: str | int | None,
+    broker_name: str,
+    account_name: str,
+    currency_code: str,
+    description: str,
+    tax_wrapper_type: str,
+    is_simulated: bool,
+    is_active: bool,
+) -> str:
+    account_id = parse_choice_id(account_choice)
+    if account_id is None:
+        raise ValueError("Account is required.")
+
+    clean_broker_name = (broker_name or "").strip()
+    clean_account_name = (account_name or "").strip()
+    clean_currency = (currency_code or "").strip().upper()
+    if not clean_broker_name:
+        raise ValueError("Broker is required.")
+    if not clean_account_name:
+        raise ValueError("Account name is required.")
+    if not clean_currency:
+        raise ValueError("Currency is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            raise ValueError(f"Account id {account_id} does not exist.")
+
+        broker = get_or_create_broker(session, clean_broker_name)
+        duplicate = session.scalar(
+            select(Account).where(
+                Account.id != account_id,
+                Account.broker_id == broker.id,
+                Account.name == clean_account_name,
+            )
+        )
+        if duplicate is not None:
+            raise ValueError(f"Account '{clean_account_name}' already exists for this broker.")
+
+        account.broker = broker
+        account.name = clean_account_name
+        account.currency_code = clean_currency
+        account.description = (description or "").strip() or None
+        account.tax_wrapper_type = (tax_wrapper_type or "").strip() or None
+        account.is_simulated = bool(is_simulated)
+        account.is_active = bool(is_active)
+        session.commit()
+
+    status = "enabled" if account.is_active else "disabled"
+    return f"Updated account '{account.name}' ({status})."
+
+
+def portfolio_details(portfolio_choice: str | int | None) -> tuple[str, str, str, bool]:
+    portfolio_id = parse_choice_id(portfolio_choice)
+    if portfolio_id is None:
+        return "", "", "", True
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio = session.get(Portfolio, portfolio_id)
+        if portfolio is None:
+            return "", "", "", True
+        return (
+            portfolio.name,
+            portfolio.description or "",
+            portfolio.portfolio_url or "",
+            bool(portfolio.is_active),
+        )
+
+
+def update_portfolio(
+    portfolio_choice: str | int | None,
+    portfolio_name: str,
+    description: str,
+    portfolio_url: str,
+    is_active: bool,
+) -> str:
+    portfolio_id = parse_choice_id(portfolio_choice)
+    if portfolio_id is None:
+        raise ValueError("Portfolio is required.")
+
+    clean_name = (portfolio_name or "").strip()
+    if not clean_name:
+        raise ValueError("Portfolio name is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio = session.get(Portfolio, portfolio_id)
+        if portfolio is None:
+            raise ValueError(f"Portfolio id {portfolio_id} does not exist.")
+
+        duplicate = session.scalar(
+            select(Portfolio).where(
+                Portfolio.id != portfolio_id,
+                Portfolio.account_id == portfolio.account_id,
+                Portfolio.name == clean_name,
+            )
+        )
+        if duplicate is not None:
+            raise ValueError(
+                f"Portfolio '{clean_name}' already exists for account '{portfolio.account.name}'."
+            )
+
+        portfolio.name = clean_name
+        portfolio.description = (description or "").strip() or None
+        portfolio.portfolio_url = (portfolio_url or "").strip() or None
+        portfolio.is_active = bool(is_active)
+        session.commit()
+
+    status = "enabled" if portfolio.is_active else "disabled"
+    return f"Updated portfolio '{portfolio.name}' ({status})."
+
+
+def get_or_create_broker(
+    session: Session,
+    name: str,
+    description: str | None = None,
+) -> Broker:
     broker = session.scalar(select(Broker).where(Broker.name == name))
     if broker is None:
-        broker = Broker(name=name)
+        broker = Broker(name=name, description=description, is_active=True)
         session.add(broker)
         session.flush()
+    elif description and not broker.description:
+        broker.description = description
     return broker
 
 
@@ -143,6 +387,7 @@ def get_or_create_account(
     description: str | None = None,
     tax_wrapper_type: str | None = None,
     is_simulated: bool = False,
+    is_active: bool = True,
 ) -> Account:
     account = session.scalar(
         select(Account).where(Account.broker_id == broker.id, Account.name == name)
@@ -155,6 +400,7 @@ def get_or_create_account(
             currency_code=currency_code,
             tax_wrapper_type=tax_wrapper_type,
             is_simulated=is_simulated,
+            is_active=is_active,
         )
         session.add(account)
         session.flush()
@@ -166,18 +412,34 @@ def get_or_create_portfolio(
     account: Account,
     name: str = DEFAULT_PORTFOLIO_NAME,
     description: str | None = None,
+    portfolio_url: str | None = None,
+    is_active: bool = True,
 ) -> Portfolio:
     portfolio = session.scalar(
         select(Portfolio).where(Portfolio.account_id == account.id, Portfolio.name == name)
     )
     if portfolio is None:
-        portfolio = Portfolio(account=account, name=name, description=description)
+        portfolio = Portfolio(
+            account=account,
+            name=name,
+            description=description,
+            portfolio_url=portfolio_url,
+            is_active=is_active,
+        )
         session.add(portfolio)
         session.flush()
+    else:
+        if description and not portfolio.description:
+            portfolio.description = description
+        if portfolio_url and not portfolio.portfolio_url:
+            portfolio.portfolio_url = portfolio_url
     return portfolio
 
 
-def account_choices(include_simulated: bool = True) -> list[str]:
+def account_choices(
+    include_simulated: bool = True,
+    include_inactive: bool = False,
+) -> list[str]:
     session_factory = get_session_factory()
     with session_factory() as session:
         statement = (
@@ -187,8 +449,10 @@ def account_choices(include_simulated: bool = True) -> list[str]:
         )
         if not include_simulated:
             statement = statement.where(Account.is_simulated.is_(False))
+        if not include_inactive:
+            statement = statement.where(Account.is_active.is_(True), Broker.is_active.is_(True))
         rows = session.execute(statement).all()
-    return [_account_label(account, broker) for account, broker in rows]
+    return [_account_label(account, broker, include_status=include_inactive) for account, broker in rows]
 
 
 def list_brokers() -> pd.DataFrame:
@@ -199,6 +463,25 @@ def list_brokers() -> pd.DataFrame:
     return pd.DataFrame(
         [{"ID": broker.id, "Broker": broker.name} for broker in rows],
         columns=["ID", "Broker"],
+    )
+
+
+def list_brokers_detailed() -> pd.DataFrame:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = session.scalars(select(Broker).order_by(Broker.name)).all()
+
+    return pd.DataFrame(
+        [
+            {
+                "ID": broker.id,
+                "Broker": broker.name,
+                "Description": broker.description or "",
+                "Active": "Yes" if broker.is_active else "No",
+            }
+            for broker in rows
+        ],
+        columns=["ID", "Broker", "Description", "Active"],
     )
 
 
@@ -226,6 +509,7 @@ def list_accounts(account_filter: str = "All") -> pd.DataFrame:
                 "Currency": account.currency_code,
                 "Tax Wrapper": account.tax_wrapper_type or "",
                 "Simulated": "Yes" if account.is_simulated else "No",
+                "Active": "Yes" if account.is_active else "No",
             }
             for account, broker in rows
         ],
@@ -237,6 +521,7 @@ def list_accounts(account_filter: str = "All") -> pd.DataFrame:
             "Currency",
             "Tax Wrapper",
             "Simulated",
+            "Active",
         ],
     )
 
@@ -263,9 +548,11 @@ def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
                 "Broker": broker.name,
                 "Account": account.name,
                 "Portfolio": portfolio.name,
+                "Portfolio URL": portfolio.portfolio_url or "",
                 "Description": portfolio.description or "",
                 "Currency": account.currency_code,
                 "Simulated Account": "Yes" if account.is_simulated else "No",
+                "Active": "Yes" if portfolio.is_active else "No",
             }
             for portfolio, account, broker in rows
         ],
@@ -274,30 +561,34 @@ def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
             "Broker",
             "Account",
             "Portfolio",
+            "Portfolio URL",
             "Description",
             "Currency",
             "Simulated Account",
+            "Active",
         ],
     )
 
 
-def portfolio_choices_for_account(account_choice: str | int | None) -> list[str]:
+def portfolio_choices_for_account(
+    account_choice: str | int | None,
+    include_inactive: bool = False,
+) -> list[str]:
     account_id = parse_choice_id(account_choice)
     if account_id is None:
         return []
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        rows = session.scalars(
-            select(Portfolio)
-            .where(Portfolio.account_id == account_id)
-            .order_by(Portfolio.name)
-        ).all()
-    return [_portfolio_label(portfolio) for portfolio in rows]
+        statement = select(Portfolio).where(Portfolio.account_id == account_id)
+        if not include_inactive:
+            statement = statement.where(Portfolio.is_active.is_(True))
+        rows = session.scalars(statement.order_by(Portfolio.name)).all()
+    return [_portfolio_label(portfolio, include_status=include_inactive) for portfolio in rows]
 
 
 def default_account_choice() -> str | None:
-    choices = account_choices(include_simulated=True)
+    choices = account_choices(include_simulated=True, include_inactive=False)
     return choices[0] if choices else None
 
 
@@ -315,14 +606,25 @@ def parse_choice_id(choice: str | int | None) -> int | None:
     return int(raw_id) if raw_id else None
 
 
-def _account_label(account: Account, broker: Broker) -> str:
+def _account_label(
+    account: Account,
+    broker: Broker,
+    include_status: bool = False,
+) -> str:
     badge = " [TEST]" if account.is_simulated else ""
+    active = " [DISABLED]" if include_status and not account.is_active else ""
     wrapper = f" ({account.tax_wrapper_type})" if account.tax_wrapper_type else ""
-    return f"{account.id} | {broker.name} / {account.name}{wrapper}{badge}"
+    return f"{account.id} | {broker.name} / {account.name}{wrapper}{badge}{active}"
 
 
-def _portfolio_label(portfolio: Portfolio) -> str:
-    return f"{portfolio.id} | {portfolio.name}"
+def _portfolio_label(portfolio: Portfolio, include_status: bool = False) -> str:
+    active = " [DISABLED]" if include_status and not portfolio.is_active else ""
+    return f"{portfolio.id} | {portfolio.name}{active}"
+
+
+def _broker_label(broker: Broker, include_status: bool = False) -> str:
+    active = " [DISABLED]" if include_status and not broker.is_active else ""
+    return f"{broker.id} | {broker.name}{active}"
 
 
 def _find_account_choice(broker_name: str, account_name: str) -> str:

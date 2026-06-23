@@ -101,6 +101,16 @@ def ticker_link(ticker: object) -> str:
     return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{clean_ticker}</a>'
 
 
+def portfolio_link(name: object, url: object) -> str:
+    clean_name = str(name or "").strip()
+    clean_url = str(url or "").strip()
+    if not clean_name:
+        return ""
+    if not clean_url:
+        return clean_name
+    return f'<a href="{clean_url}" target="_blank" rel="noopener noreferrer">{clean_name}</a>'
+
+
 def mode_banner(account_mode: str) -> str:
     from portfolio_management.services.analytics import SANDBOX_MODE
 

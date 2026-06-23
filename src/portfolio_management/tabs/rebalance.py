@@ -4,7 +4,6 @@ from typing import Any
 
 import gradio as gr
 
-from portfolio_management.db.models import AssetClass
 from portfolio_management.services.accounts import account_choices
 from portfolio_management.services.analytics import LIVE_MODE
 from portfolio_management.services.rebalancing import (
@@ -13,15 +12,23 @@ from portfolio_management.services.rebalancing import (
     rebalance_report,
     target_allocations,
 )
+from portfolio_management.services.reference_data import list_asset_class_codes
 from portfolio_management.tabs._shared import format_two_decimals
 
 
 def rebalance_positions(account_choice: str, account_mode: str) -> object:
     rebalance = rebalance_report(account_choice, account_mode=account_mode).copy()
-    for column in ["Current Value", "Trade Value"]:
+    for column in ["Current Value", "Actual %", "Target %", "Drift %", "Trade Value"]:
         if column in rebalance.columns:
             rebalance[column] = rebalance[column].map(format_two_decimals)
     return rebalance
+
+
+def _formatted_target_allocations(account_choice: str) -> object:
+    df = target_allocations(account_choice).copy()
+    if "Target %" in df.columns:
+        df["Target %"] = df["Target %"].map(format_two_decimals)
+    return df
 
 
 def _set_target_allocation(
@@ -40,14 +47,14 @@ def _set_target_allocation(
         status = f"Could not set target allocation: {exc}"
     return (
         status,
-        target_allocations(account_choice),
+        _formatted_target_allocations(account_choice),
         rebalance_positions(account_choice, account_mode=account_mode),
     )
 
 
 def _refresh_rebalance(account_choice: str, account_mode: str) -> tuple[Any, ...]:
     return (
-        target_allocations(account_choice),
+        _formatted_target_allocations(account_choice),
         rebalance_positions(account_choice, account_mode=account_mode),
     )
 
@@ -65,13 +72,13 @@ def build_rebalance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
             )
             rebalance_asset_class = gr.Dropdown(
                 label="Target Asset Class",
-                choices=[ac.value for ac in AssetClass],
-                value=AssetClass.EQUITY.value,
+                choices=list_asset_class_codes(),
+                value="EQUITY",
             )
             target_weight_percent = gr.Textbox(label="Target %", value="60")
         set_target_button = gr.Button("Set Target Allocation", variant="primary")
         target_allocations_table = gr.Dataframe(
-            value=lambda: target_allocations(selected_rebalance_account),
+            value=lambda: _formatted_target_allocations(selected_rebalance_account),
             headers=["Asset Class", "Target %"],
             datatype=["str", "str"],
             label="Target Allocations",

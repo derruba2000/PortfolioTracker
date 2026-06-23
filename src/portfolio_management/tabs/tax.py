@@ -10,7 +10,12 @@ from portfolio_management.services.analytics import (
     realized_pnl_report,
     tax_prep_report,
 )
-from portfolio_management.tabs._shared import as_date_table
+from portfolio_management.tabs._shared import (
+    as_date_table,
+    format_integer_with_commas,
+    format_two_decimals,
+)
+import pandas as pd
 
 
 def _tax_report_table(tax_year: str, account_mode: str) -> object:
@@ -19,7 +24,14 @@ def _tax_report_table(tax_year: str, account_mode: str) -> object:
         tax_year=int(clean_year) if clean_year else None,
         account_mode=account_mode,
     )
-    return as_date_table(report, ["Date"])
+    result = as_date_table(report, ["Date"])
+    if isinstance(result, pd.DataFrame):
+        if "Quantity Sold" in result.columns:
+            result["Quantity Sold"] = result["Quantity Sold"].map(format_integer_with_commas)
+        for col in ["Proceeds", "Cost Basis", "Realized P&L"]:
+            if col in result.columns:
+                result[col] = result[col].map(format_two_decimals)
+    return result
 
 
 def _tax_prep_table(tax_year: str, account_mode: str) -> object:
@@ -28,7 +40,14 @@ def _tax_prep_table(tax_year: str, account_mode: str) -> object:
         tax_year=int(clean_year) if clean_year else None,
         account_mode=account_mode,
     )
-    return as_date_table(report, ["Date"])
+    result = as_date_table(report, ["Date"])
+    if isinstance(result, pd.DataFrame):
+        if "Amount" in result.columns:
+            result["Amount"] = result["Amount"].map(format_two_decimals)
+        for col in ["Cost Basis", "Realized P&L"]:
+            if col in result.columns:
+                result[col] = result[col].map(format_two_decimals)
+    return result
 
 
 def _refresh_tax_report(tax_year: str, account_mode: str) -> object:

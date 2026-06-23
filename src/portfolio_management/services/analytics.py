@@ -52,6 +52,7 @@ def current_positions(
             "Broker",
             "Account",
             "Portfolio",
+            "Portfolio URL",
             "Ticker",
             "Name",
             "Asset Class",
@@ -290,6 +291,9 @@ def _load_transaction_rows(
         .join(Portfolio.account)
         .join(Account.broker)
         .join(Transaction.security, isouter=True)
+        .where(Broker.is_active.is_(True))
+        .where(Account.is_active.is_(True))
+        .where(Portfolio.is_active.is_(True))
         .order_by(Transaction.date, Transaction.id)
     )
     if account_mode == SANDBOX_MODE:
@@ -345,15 +349,17 @@ def _calculate_position_records(
             continue
 
         latest_price = _latest_price(session, security)
-        market_value = quantity * latest_price if latest_price is not None else Decimal("0")
         average_cost = cost_basis / quantity if quantity else Decimal("0")
-        unrealized = market_value - cost_basis if latest_price is not None else Decimal("0")
+        # When no price history exists, use cost basis as best-effort market value
+        market_value = quantity * latest_price if latest_price is not None else cost_basis
+        unrealized = market_value - cost_basis
 
         records.append(
             {
                 "Broker": broker.name,
                 "Account": account.name,
                 "Portfolio": portfolio.name,
+                "Portfolio URL": portfolio.portfolio_url or "",
                 "Ticker": security.ticker,
                 "Name": security.name,
                 "Asset Class": security.asset_class.value,
@@ -378,6 +384,7 @@ def _calculate_position_records(
                 "Broker": broker.name,
                 "Account": account.name,
                 "Portfolio": portfolio.name,
+                "Portfolio URL": portfolio.portfolio_url or "",
                 "Ticker": "CASH",
                 "Name": f"{currency_code} Cash",
                 "Asset Class": "CASH",

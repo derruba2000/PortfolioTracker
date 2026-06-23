@@ -27,6 +27,7 @@ from portfolio_management.services.accounts import (
     get_or_create_portfolio,
     parse_choice_id,
 )
+from portfolio_management.services.reference_data import is_known_asset_class
 
 
 DEFAULT_BROKER_NAME = "Default Broker"
@@ -265,6 +266,9 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
             .join(Portfolio.account)
             .join(Account.broker)
             .join(Transaction.security, isouter=True)
+            .where(Broker.is_active.is_(True))
+            .where(Account.is_active.is_(True))
+            .where(Portfolio.is_active.is_(True))
             .order_by(Transaction.date.desc(), Transaction.id.desc())
         )
         if account_filter == "Real":
@@ -281,6 +285,7 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
                 "Broker": broker.name,
                 "Account": f"{account.name} [TEST]" if account.is_simulated else account.name,
                 "Portfolio": portfolio.name,
+                "Portfolio URL": portfolio.portfolio_url or "",
                 "Ticker": security.ticker if security else "",
                 "Type": transaction.type.value,
                 "Description": transaction.description or "",
@@ -298,6 +303,7 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
             "Broker",
             "Account",
             "Portfolio",
+            "Portfolio URL",
             "Ticker",
             "Type",
             "Description",
@@ -456,11 +462,14 @@ def _get_or_create_security(
         security = Security(
             ticker=transaction_input.ticker,
             name=transaction_input.security_name or transaction_input.ticker,
+            description=transaction_input.security_name or None,
             asset_class=transaction_input.asset_class,
             currency_code=transaction_input.security_currency_code,
         )
         session.add(security)
         session.flush()
+    elif transaction_input.security_name and not security.description:
+        security.description = transaction_input.security_name
     return security
 
 
@@ -507,11 +516,10 @@ def _parse_asset_class(value: Any) -> AssetClass:
     if not clean_value:
         return AssetClass.EQUITY
 
-    try:
-        return AssetClass(clean_value)
-    except ValueError as exc:
+    if not is_known_asset_class(clean_value):
         allowed = ", ".join(asset_class.value for asset_class in AssetClass)
-        raise ValueError(f"Unsupported asset class '{clean_value}'. Use one of: {allowed}.") from exc
+        raise ValueError(f"Unsupported asset class '{clean_value}'. Use one of: {allowed}.")
+    return AssetClass(clean_value)
 
 
 def _parse_datetime(value: Any) -> datetime:

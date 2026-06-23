@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from portfolio_management.db.base import Base
@@ -32,11 +32,29 @@ class TransactionType(StrEnum):
     WITHDRAWAL = "WITHDRAWAL"
 
 
+class AssetClassOption(Base):
+    __tablename__ = "asset_classes"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class Currency(Base):
+    __tablename__ = "currencies"
+
+    code: Mapped[str] = mapped_column(String(3), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class Broker(Base):
     __tablename__ = "brokers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     accounts: Mapped[list["Account"]] = relationship(back_populates="broker")
 
@@ -51,6 +69,7 @@ class Account(Base):
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
     tax_wrapper_type: Mapped[str | None] = mapped_column(String(64))
     is_simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     broker: Mapped[Broker] = relationship(back_populates="accounts")
     portfolios: Mapped[list["Portfolio"]] = relationship(
@@ -72,6 +91,8 @@ class Portfolio(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
+    portfolio_url: Mapped[str | None] = mapped_column(String(2000))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     account: Mapped[Account] = relationship(back_populates="portfolios")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="portfolio")
@@ -111,6 +132,7 @@ class Security(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     ticker: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000))
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
 

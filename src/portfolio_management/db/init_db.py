@@ -8,6 +8,8 @@ from portfolio_management.db.models import (
     Account,
     AccountStrategy,
     Benchmark,
+    AssetClassOption,
+    Currency,
     FxRateHistory,
     Broker,
     PriceHistory,
@@ -18,6 +20,7 @@ from portfolio_management.db.models import (
 )
 from portfolio_management.db.seed import seed_defaults
 from portfolio_management.db.session import get_engine
+from portfolio_management.services.reference_data import seed_reference_data
 from sqlalchemy import text
 
 
@@ -31,12 +34,29 @@ def initialize_database(seed: bool = True) -> None:
 
     if seed:
         seed_defaults(engine)
+        with engine.begin() as connection:
+            from sqlalchemy.orm import Session
+
+            with Session(bind=connection) as session:
+                seed_reference_data(session)
+                session.commit()
 
 
 def migrate_sqlite_schema(engine: object) -> None:
     """Apply small SQLite schema upgrades until a migration tool is introduced."""
 
     with engine.begin() as connection:
+        broker_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(brokers)")).fetchall()
+        }
+        if "description" not in broker_columns:
+            connection.execute(text("ALTER TABLE brokers ADD COLUMN description VARCHAR(1000)"))
+        if "is_active" not in broker_columns:
+            connection.execute(
+                text("ALTER TABLE brokers ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+            )
+
         account_columns = {
             row[1]
             for row in connection.execute(text("PRAGMA table_info(accounts)")).fetchall()
@@ -49,6 +69,10 @@ def migrate_sqlite_schema(engine: object) -> None:
             connection.execute(
                 text("ALTER TABLE accounts ADD COLUMN is_simulated BOOLEAN NOT NULL DEFAULT 0")
             )
+        if "is_active" not in account_columns:
+            connection.execute(
+                text("ALTER TABLE accounts ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+            )
 
         portfolio_columns = {
             row[1]
@@ -56,6 +80,52 @@ def migrate_sqlite_schema(engine: object) -> None:
         }
         if "description" not in portfolio_columns:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN description VARCHAR(1000)"))
+        if "portfolio_url" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN portfolio_url VARCHAR(2000)"))
+        if "is_active" not in portfolio_columns:
+            connection.execute(
+                text("ALTER TABLE portfolios ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+            )
+
+        security_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(securities)"))
+        }
+        if "description" not in security_columns:
+            connection.execute(text("ALTER TABLE securities ADD COLUMN description VARCHAR(1000)"))
+
+        reference_tables = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "asset_classes" not in reference_tables:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE asset_classes (
+                        code VARCHAR(32) NOT NULL,
+                        name VARCHAR(255) NOT NULL,
+                        display_order INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (code)
+                    )
+                    """
+                )
+            )
+        if "currencies" not in reference_tables:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE currencies (
+                        code VARCHAR(3) NOT NULL,
+                        name VARCHAR(255) NOT NULL,
+                        display_order INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (code)
+                    )
+                    """
+                )
+            )
 
         transaction_columns = {
             row[1]

@@ -12,8 +12,10 @@ from portfolio_management.services.analytics import (
     dashboard_summary,
 )
 from portfolio_management.tabs._shared import (
+    format_integer_with_commas,
     format_two_decimals,
     mode_banner,
+    portfolio_link,
     ticker_link,
 )
 
@@ -27,9 +29,17 @@ def dashboard_summary_table(account_mode: str) -> object:
 
 def dashboard_positions(account_mode: str) -> object:
     positions = current_positions(account_mode=account_mode).copy()
+    if "Portfolio" in positions.columns and "Portfolio URL" in positions.columns:
+        positions["Portfolio"] = positions.apply(
+            lambda row: portfolio_link(row["Portfolio"], row["Portfolio URL"]),
+            axis=1,
+        )
+        positions = positions.drop(columns=["Portfolio URL"])
     if "Ticker" in positions.columns:
         positions["Ticker"] = positions["Ticker"].map(ticker_link)
-    for column in ["Quantity", "Market Value", "Unrealized P&L"]:
+    if "Quantity" in positions.columns:
+        positions["Quantity"] = positions["Quantity"].map(format_integer_with_commas)
+    for column in ["Average Cost", "Latest Price", "Market Value", "Unrealized P&L"]:
         if column in positions.columns:
             positions[column] = positions[column].map(format_two_decimals)
     return positions
@@ -71,7 +81,7 @@ def build_dashboard_tab() -> dict[str, Any]:
                 "Latest Price", "Market Value", "Unrealized P&L",
             ],
             datatype=[
-                "str", "str", "str", "markdown", "str",
+                "str", "str", "markdown", "markdown", "str",
                 "str", "str", "str", "str",
                 "str", "str", "str",
             ],

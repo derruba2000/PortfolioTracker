@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from portfolio_management.db.models import Benchmark, Strategy
 from portfolio_management.db.session import get_engine
+from portfolio_management.services.reference_data import seed_reference_data
 
 
 DEFAULT_BENCHMARKS = [
@@ -32,6 +33,8 @@ def seed_defaults(engine: Engine | None = None) -> None:
             exists = session.scalar(select(Strategy).where(Strategy.name == name))
             if exists is None:
                 session.add(Strategy(name=name, description=description))
+
+        seed_reference_data(session)
 
         session.commit()
 
