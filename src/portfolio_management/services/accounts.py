@@ -202,14 +202,19 @@ def list_brokers() -> pd.DataFrame:
     )
 
 
-def list_accounts() -> pd.DataFrame:
+def list_accounts(account_filter: str = "All") -> pd.DataFrame:
     session_factory = get_session_factory()
     with session_factory() as session:
-        rows = session.execute(
+        stmt = (
             select(Account, Broker)
             .join(Account.broker)
             .order_by(Broker.name, Account.name)
-        ).all()
+        )
+        if account_filter == "Real":
+            stmt = stmt.where(Account.is_simulated.is_(False))
+        elif account_filter == "Test":
+            stmt = stmt.where(Account.is_simulated.is_(True))
+        rows = session.execute(stmt).all()
 
     return pd.DataFrame(
         [
@@ -236,15 +241,20 @@ def list_accounts() -> pd.DataFrame:
     )
 
 
-def list_portfolios() -> pd.DataFrame:
+def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
     session_factory = get_session_factory()
     with session_factory() as session:
-        rows = session.execute(
+        stmt = (
             select(Portfolio, Account, Broker)
             .join(Portfolio.account)
             .join(Account.broker)
             .order_by(Broker.name, Account.name, Portfolio.name)
-        ).all()
+        )
+        if account_filter == "Real":
+            stmt = stmt.where(Account.is_simulated.is_(False))
+        elif account_filter == "Test":
+            stmt = stmt.where(Account.is_simulated.is_(True))
+        rows = session.execute(stmt).all()
 
     return pd.DataFrame(
         [

@@ -255,18 +255,23 @@ def import_transactions_from_csv(file_path: str | Path, portfolio_id: int | str 
     return f"Imported {imported_count} transaction(s)."
 
 
-def list_transactions() -> pd.DataFrame:
+def list_transactions(account_filter: str = "All") -> pd.DataFrame:
     session_factory = get_session_factory()
 
     with session_factory() as session:
-        rows = session.execute(
+        stmt = (
             select(Transaction, Portfolio, Account, Broker, Security)
             .join(Transaction.portfolio)
             .join(Portfolio.account)
             .join(Account.broker)
             .join(Transaction.security, isouter=True)
             .order_by(Transaction.date.desc(), Transaction.id.desc())
-        ).all()
+        )
+        if account_filter == "Real":
+            stmt = stmt.where(Account.is_simulated.is_(False))
+        elif account_filter == "Test":
+            stmt = stmt.where(Account.is_simulated.is_(True))
+        rows = session.execute(stmt).all()
 
     return pd.DataFrame(
         [
@@ -525,13 +530,18 @@ def _parse_decimal(value: Any, default: Decimal) -> Decimal:
         return default
 
     try:
-        return Decimal(str(value).strip())
+        normalized = str(value).strip().replace(",", "")
+        if normalized == "":
+            return default
+        return Decimal(normalized)
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"Invalid decimal value '{value}'.") from exc
 
 
 def _parse_optional_decimal(value: Any) -> Decimal | None:
     if _is_missing(value):
+        return None
+    if str(value).strip() == "":
         return None
     return _parse_decimal(value, default=Decimal("0"))
 
@@ -545,7 +555,10 @@ def _parse_int(value: Any, default: int) -> int:
         return default
 
     try:
-        decimal_value = Decimal(str(value).strip())
+        normalized = str(value).strip().replace(",", "")
+        if normalized == "":
+            return default
+        decimal_value = Decimal(normalized)
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"Invalid integer value '{value}'.") from exc
 
