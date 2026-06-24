@@ -5,12 +5,18 @@ from typing import Any
 import gradio as gr
 
 from portfolio_management.services.analytics import (
-    LIVE_MODE,
     allocation_by_asset_class,
     allocation_by_currency,
     current_positions,
     dashboard_summary,
 )
+from portfolio_management.services.analysis_filters import (
+    ACCOUNT_SCOPE_CHOICES,
+    ALL_PORTFOLIOS,
+    parse_portfolio_filter,
+    portfolio_filter_choices,
+)
+from portfolio_management.services.analytics import LIVE_MODE
 from portfolio_management.tabs._shared import (
     format_integer_with_commas,
     format_two_decimals,
@@ -23,20 +29,30 @@ from portfolio_management.tabs._shared import (
 REPORTING_CURRENCIES = ["GBP", "EUR", "USD"]
 
 
-def dashboard_summary_table(account_mode: str, reporting_currency: str) -> object:
+def dashboard_summary_table(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = None,
+) -> object:
     summary = dashboard_summary(
         account_mode=account_mode,
         reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
     ).copy()
     if "Value" in summary.columns:
         summary["Value"] = summary["Value"].map(format_two_decimals)
     return summary
 
 
-def dashboard_positions(account_mode: str, reporting_currency: str) -> object:
+def dashboard_positions(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = None,
+) -> object:
     positions = current_positions(
         account_mode=account_mode,
         reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
     ).copy()
     if "Portfolio" in positions.columns and "Portfolio URL" in positions.columns:
         positions["Portfolio"] = positions.apply(
@@ -54,38 +70,60 @@ def dashboard_positions(account_mode: str, reporting_currency: str) -> object:
     return positions
 
 
-def refresh_dashboard(account_mode: str, reporting_currency: str) -> tuple[Any, ...]:
+def refresh_dashboard(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = None,
+) -> tuple[Any, ...]:
     """Returns (mode_banner_html, summary, positions, asset_alloc, currency_alloc)."""
     return (
         mode_banner(account_mode),
-        dashboard_summary_table(account_mode, reporting_currency),
-        dashboard_positions(account_mode, reporting_currency),
+        dashboard_summary_table(account_mode, reporting_currency, portfolio_choice),
+        dashboard_positions(account_mode, reporting_currency, portfolio_choice),
         allocation_by_asset_class(
             account_mode=account_mode,
             reporting_currency=reporting_currency,
+            portfolio_id=parse_portfolio_filter(portfolio_choice),
         ),
         allocation_by_currency(
             account_mode=account_mode,
             reporting_currency=reporting_currency,
+            portfolio_id=parse_portfolio_filter(portfolio_choice),
         ),
     )
 
 
-def build_dashboard_tab() -> dict[str, Any]:
-    from portfolio_management.services.analytics import SANDBOX_MODE
+def dashboard_scope_changed(
+    account_mode: str,
+    reporting_currency: str,
+) -> tuple[Any, ...]:
+    choices = portfolio_filter_choices(account_mode)
+    return (
+        gr.update(choices=choices, value=ALL_PORTFOLIOS),
+        *refresh_dashboard(account_mode, reporting_currency, ALL_PORTFOLIOS),
+    )
 
+
+def build_dashboard_tab() -> dict[str, Any]:
     with gr.Tab("Dashboard"):
-        mode_toggle = gr.Radio(
-            label="Mode",
-            choices=[LIVE_MODE, SANDBOX_MODE],
-            value=LIVE_MODE,
-        )
-        reporting_currency = gr.Dropdown(
-            label="Reporting Currency",
-            choices=REPORTING_CURRENCIES,
-            value="GBP",
-            allow_custom_value=False,
-        )
+        with gr.Row():
+            mode_toggle = gr.Radio(
+                label="Account Scope",
+                choices=ACCOUNT_SCOPE_CHOICES,
+                value=LIVE_MODE,
+            )
+            portfolio_filter = gr.Dropdown(
+                label="Portfolio",
+                choices=portfolio_filter_choices(LIVE_MODE),
+                value=ALL_PORTFOLIOS,
+                allow_custom_value=False,
+            )
+            reporting_currency = gr.Dropdown(
+                label="Reporting Currency",
+                choices=REPORTING_CURRENCIES,
+                value="GBP",
+                allow_custom_value=False,
+            )
         mode_banner_html = gr.HTML(value=mode_banner(LIVE_MODE))
         summary_table = gr.Dataframe(
             value=lambda: dashboard_summary_table(LIVE_MODE, "GBP"),
@@ -135,6 +173,7 @@ def build_dashboard_tab() -> dict[str, Any]:
     return {
         "mode_toggle": mode_toggle,
         "reporting_currency": reporting_currency,
+        "portfolio_filter": portfolio_filter,
         "mode_banner_html": mode_banner_html,
         "summary_table": summary_table,
         "positions_table": positions_table,

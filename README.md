@@ -1,6 +1,7 @@
 # Portfolio Tracker
 
-Local-first portfolio management app built with Python 3.12, Gradio, SQLAlchemy, Pandas, and SQLite.
+Local-first portfolio management app built with Python 3.12, Gradio, SQLAlchemy,
+Pandas, NumPy, SciPy, Plotly, and SQLite.
 
 ## Quick Start
 
@@ -54,8 +55,10 @@ Nested tabs:
 ## Main Workflows
 
 The Dashboard reporting-currency filter converts all position values, totals, and
-allocation charts to GBP, EUR, or USD. Every conversion is normalized through
-USD using the latest available FX closes on or before today.
+allocation charts to GBP, EUR, or USD. Account scope can be Live,
+Paper/Sandbox/Test, or All Accounts, while the Portfolio filter can aggregate
+all matching portfolios or drill into one. Every conversion is normalized
+through USD using the latest available FX closes on or before today.
 
 ### 1) Master Data
 
@@ -86,18 +89,33 @@ Delta table paths configured in Settings:
 ### 4) Analytics, Rebalance, Tax
 
 - Dashboard shows summary, positions, and allocation charts.
-- Performance tab shows portfolio TWR and benchmark overlay.
+- Performance provides advanced portfolio analysis: TWR, MWR/XIRR, volatility,
+  Sharpe and Sortino ratios, alpha, beta, drawdowns, benchmark tracking error,
+  R-Squared, asset correlations, and historical stress tests.
 - Rebalance tab compares current vs target asset-class allocation and suggests trades.
 - Tax tab shows FIFO realized gains, tax-prep report, and CSV export.
 
-## Live And Sandbox Modes
+## Account Scopes
 
-A global mode toggle controls Dashboard, Performance, and Tax outputs:
+A global account-scope toggle controls Dashboard, Performance, and Tax outputs:
 
 - `Live Mode`: includes real accounts only.
-- `Sandbox Mode`: includes simulated accounts only.
+- `Paper / Sandbox / Test Accounts`: includes simulated accounts only.
+- `All Accounts`: combines live and simulated accounts.
 
 This prevents simulated accounts from contaminating real portfolio summaries.
+
+## Performance Analysis
+
+The Performance tab includes portfolio drill-down and three sections:
+
+- Returns & Risk: Plotly TWR/MWR and underwater charts plus risk metrics.
+- Benchmarking: normalized portfolio/benchmark growth, tracking error, and R-Squared.
+- Advanced Analytics: held-asset correlation heatmap and historical stress tests.
+
+The annual risk-free rate and reporting currency are configurable in the tab.
+No additional environment variables are required. Run `poetry install` after
+pulling changes so Poetry installs the NumPy, SciPy, and Plotly dependencies.
 
 ## Settings
 

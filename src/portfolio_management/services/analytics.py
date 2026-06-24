@@ -24,7 +24,8 @@ from portfolio_management.db.models import (
 from portfolio_management.db.session import get_session_factory
 
 LIVE_MODE = "Live Mode"
-SANDBOX_MODE = "Sandbox Mode"
+SANDBOX_MODE = "Paper / Sandbox / Test Accounts"
+ALL_ACCOUNTS_MODE = "All Accounts"
 
 
 @dataclass
@@ -39,6 +40,7 @@ def current_positions(
     account_mode: str = LIVE_MODE,
     reporting_currency: str | None = None,
     as_of_date: date | None = None,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
     reporting_currency = reporting_currency.upper() if reporting_currency else None
     as_of_date = as_of_date or date.today()
@@ -48,6 +50,7 @@ def current_positions(
             session,
             include_simulated=include_simulated,
             account_mode=account_mode,
+            portfolio_id=portfolio_id,
         )
         records = _calculate_position_records(
             session,
@@ -187,6 +190,7 @@ def export_tax_prep_report_csv(
 def twr_curve(
     include_simulated: bool = False,
     account_mode: str = LIVE_MODE,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -194,6 +198,7 @@ def twr_curve(
             session,
             include_simulated=include_simulated,
             account_mode=account_mode,
+            portfolio_id=portfolio_id,
         )
         if not rows:
             return pd.DataFrame(columns=["Date", "TWR"])
@@ -232,12 +237,14 @@ def dashboard_summary(
     account_mode: str = LIVE_MODE,
     reporting_currency: str | None = None,
     as_of_date: date | None = None,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
     positions = current_positions(
         include_simulated=include_simulated,
         account_mode=account_mode,
         reporting_currency=reporting_currency,
         as_of_date=as_of_date,
+        portfolio_id=portfolio_id,
     )
     if positions.empty:
         total_market_value = Decimal("0")
@@ -273,11 +280,13 @@ def allocation_by_asset_class(
     account_mode: str = LIVE_MODE,
     reporting_currency: str | None = None,
     as_of_date: date | None = None,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
     positions = current_positions(
         account_mode=account_mode,
         reporting_currency=reporting_currency,
         as_of_date=as_of_date,
+        portfolio_id=portfolio_id,
     )
     if positions.empty:
         return pd.DataFrame(columns=["Asset Class", "Market Value"])
@@ -301,11 +310,13 @@ def allocation_by_currency(
     account_mode: str = LIVE_MODE,
     reporting_currency: str | None = None,
     as_of_date: date | None = None,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
     positions = current_positions(
         account_mode=account_mode,
         reporting_currency=reporting_currency,
         as_of_date=as_of_date,
+        portfolio_id=portfolio_id,
     )
     if positions.empty:
         return pd.DataFrame(columns=["Currency", "Market Value"])
@@ -328,6 +339,7 @@ def _load_transaction_rows(
     session: Session,
     include_simulated: bool,
     account_mode: str = LIVE_MODE,
+    portfolio_id: int | None = None,
 ) -> list[tuple[Transaction, Portfolio, Account, Broker, Security | None]]:
     statement = (
         select(Transaction, Portfolio, Account, Broker, Security)
@@ -342,8 +354,10 @@ def _load_transaction_rows(
     )
     if account_mode == SANDBOX_MODE:
         statement = statement.where(Account.is_simulated.is_(True))
-    elif not include_simulated:
+    elif account_mode != ALL_ACCOUNTS_MODE and not include_simulated:
         statement = statement.where(Account.is_simulated.is_(False))
+    if portfolio_id is not None:
+        statement = statement.where(Portfolio.id == portfolio_id)
     return list(session.execute(statement).all())
 
 

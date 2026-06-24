@@ -15,6 +15,9 @@ sqlalchemy = "^2.0.41"
 yfinance = "^1.4.1"
 deltalake = "^1.6.0"
 pyarrow = "^24.0.0"
+numpy = "^2.5.0"
+scipy = "^1.18.0"
+plotly = "^6.8.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.0"

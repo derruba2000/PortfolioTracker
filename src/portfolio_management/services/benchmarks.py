@@ -10,6 +10,7 @@ from portfolio_management.db.models import Benchmark
 from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import parse_choice_id
 from portfolio_management.services.analytics import LIVE_MODE, twr_curve
+from portfolio_management.services.db_performance import benchmark_price_history
 from portfolio_management.services.market_data import HistoryFetcher, fetch_yfinance_history
 
 
@@ -29,8 +30,12 @@ def benchmark_overlay(
     benchmark_choice: str | int | None,
     account_mode: str = LIVE_MODE,
     fetcher: HistoryFetcher | None = None,
+    portfolio_id: int | None = None,
 ) -> pd.DataFrame:
-    portfolio_curve = twr_curve(account_mode=account_mode)
+    portfolio_curve = twr_curve(
+        account_mode=account_mode,
+        portfolio_id=portfolio_id,
+    )
     portfolio_records = [
         {
             "Date": row["Date"],
@@ -53,8 +58,12 @@ def benchmark_overlay(
 
     start_date = date.fromisoformat(str(portfolio_curve.iloc[0]["Date"]))
     end_date = date.fromisoformat(str(portfolio_curve.iloc[-1]["Date"]))
-    history = (fetcher or fetch_yfinance_history)(ticker, start_date, end_date)
-    benchmark_records = _normalise_benchmark_history(history)
+    local_history = benchmark_price_history(ticker, start_date, end_date)
+    if not local_history.empty:
+        benchmark_records = _normalise_local_benchmark_history(local_history)
+    else:
+        history = (fetcher or fetch_yfinance_history)(ticker, start_date, end_date)
+        benchmark_records = _normalise_benchmark_history(history)
     return _overlay_dataframe(portfolio_records + benchmark_records)
 
 
@@ -79,6 +88,21 @@ def _normalise_benchmark_history(history: pd.DataFrame) -> list[dict[str, object
             "Index": float((Decimal(str(value)) / first_close) * Decimal("100")),
         }
         for index, value in close_values.items()
+    ]
+
+
+def _normalise_local_benchmark_history(history: pd.DataFrame) -> list[dict[str, object]]:
+    clean = history.dropna(subset=["Close"])
+    if clean.empty or clean.iloc[0]["Close"] == 0:
+        return []
+    first_close = Decimal(str(clean.iloc[0]["Close"]))
+    return [
+        {
+            "Date": str(row["Date"]),
+            "Series": "Benchmark",
+            "Index": float((Decimal(str(row["Close"])) / first_close) * Decimal("100")),
+        }
+        for _, row in clean.iterrows()
     ]
 
 

@@ -112,13 +112,20 @@ def portfolio_link(name: object, url: object) -> str:
 
 
 def mode_banner(account_mode: str) -> str:
-    from portfolio_management.services.analytics import SANDBOX_MODE
+    from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, SANDBOX_MODE
 
     if account_mode == SANDBOX_MODE:
         return (
             "<div style='background:#fff3cd;border:1px solid #f1c40f;"
             "padding:12px;border-radius:6px;color:#664d03;'>"
             "<strong>Sandbox Mode</strong> showing simulated accounts only.</div>"
+        )
+    if account_mode == ALL_ACCOUNTS_MODE:
+        return (
+            "<div style='background:#dbeafe;border:1px solid #3b82f6;"
+            "padding:12px;border-radius:6px;color:#1e3a8a;'>"
+            "<strong>ALL ACCOUNTS:</strong> Live and paper/sandbox/test accounts "
+            "are included together.</div>"
         )
     return (
         "<div style='background:#d1e7dd;border:1px solid #198754;"

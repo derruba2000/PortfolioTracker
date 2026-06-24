@@ -19,6 +19,7 @@ from portfolio_management.db.models import (
     TransactionType,
 )
 from portfolio_management.services.analytics import (
+    ALL_ACCOUNTS_MODE,
     SANDBOX_MODE,
     allocation_by_asset_class,
     allocation_by_currency,
@@ -504,3 +505,88 @@ def test_dashboard_resolves_unique_exchange_qualified_price_symbol(monkeypatch) 
     assert positions.loc[0, "Ticker"] == "VWRP"
     assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("141.36")
     assert Decimal(positions.loc[0, "Market Value"]) == Decimal("848.16")
+
+
+def test_positions_can_filter_one_portfolio_and_include_all_account_scopes(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        live_account = Account(broker=broker, name="Live", currency_code="USD")
+        paper_account = Account(
+            broker=broker,
+            name="Paper",
+            currency_code="USD",
+            is_simulated=True,
+        )
+        live_portfolio = Portfolio(account=live_account, name="Live Portfolio")
+        paper_portfolio = Portfolio(account=paper_account, name="Paper Portfolio")
+        live_security = Security(
+            ticker="LIVE",
+            name="Live Security",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        paper_security = Security(
+            ticker="PAPER",
+            name="Paper Security",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=live_portfolio,
+                    security=live_security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=1,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("100"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=paper_portfolio,
+                    security=paper_security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=2,
+                    price=Decimal("50"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("100"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=live_security,
+                    date=date(2026, 1, 2),
+                    close_price=Decimal("110"),
+                ),
+                PriceHistory(
+                    security=paper_security,
+                    date=date(2026, 1, 2),
+                    close_price=Decimal("55"),
+                ),
+            ]
+        )
+        session.flush()
+        live_portfolio_id = live_portfolio.id
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    all_positions = current_positions(account_mode=ALL_ACCOUNTS_MODE)
+    live_drilldown = current_positions(
+        account_mode=ALL_ACCOUNTS_MODE,
+        portfolio_id=live_portfolio_id,
+    )
+
+    assert set(all_positions["Ticker"]) == {"LIVE", "PAPER"}
+    assert list(live_drilldown["Ticker"]) == ["LIVE"]
+    assert list(live_drilldown["Portfolio"]) == ["Live Portfolio"]

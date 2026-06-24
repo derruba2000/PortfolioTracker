@@ -15,9 +15,13 @@ from portfolio_management.config import load_settings
 from portfolio_management.db.init_db import initialize_database
 from portfolio_management.tabs.accounts import build_accounts_tab, create_account_callback
 from portfolio_management.tabs.brokers import build_brokers_tab
-from portfolio_management.tabs.dashboard import build_dashboard_tab, refresh_dashboard
+from portfolio_management.tabs.dashboard import (
+    build_dashboard_tab,
+    dashboard_scope_changed,
+    refresh_dashboard,
+)
 from portfolio_management.tabs.data_entry import build_data_entry_tab
-from portfolio_management.tabs.performance import build_performance_tab, _refresh_performance
+from portfolio_management.tabs.performance import build_performance_tab
 from portfolio_management.tabs.portfolios import build_portfolios_tab, create_portfolio_callback
 from portfolio_management.tabs.rebalance import build_rebalance_tab
 from portfolio_management.tabs.settings import build_settings_tab
@@ -80,10 +84,8 @@ def _mode_changed(
     reporting_currency: str,
     tax_year: str,
 ) -> tuple[object, ...]:
-    dashboard_values = refresh_dashboard(account_mode, reporting_currency)
     return (
-        *dashboard_values,
-        _refresh_performance(account_mode),
+        *dashboard_scope_changed(account_mode, reporting_currency),
         _refresh_tax_report(tax_year, account_mode),
     )
 
@@ -133,6 +135,7 @@ def build_app() -> gr.Blocks:
         dashboard = build_dashboard_tab()
         mode_toggle = dashboard["mode_toggle"]
         reporting_currency = dashboard["reporting_currency"]
+        dashboard_portfolio_filter = dashboard["portfolio_filter"]
         mode_banner_html = dashboard["mode_banner_html"]
 
         build_rebalance_tab(mode_toggle)
@@ -164,7 +167,7 @@ def build_app() -> gr.Blocks:
         # ── Cross-tab: Dashboard refresh (needs top-level mode_banner_html) ──
         dashboard["refresh_dashboard_button"].click(
             fn=refresh_dashboard,
-            inputs=[mode_toggle, reporting_currency],
+            inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],
@@ -221,18 +224,29 @@ def build_app() -> gr.Blocks:
             fn=_mode_changed,
             inputs=[mode_toggle, reporting_currency, tax["tax_year"]],
             outputs=[
+                dashboard_portfolio_filter,
                 mode_banner_html,
                 dashboard["summary_table"],
                 dashboard["positions_table"],
                 dashboard["asset_allocation_plot"],
                 dashboard["currency_allocation_plot"],
-                performance["performance_plot"],
                 tax["tax_report"],
             ],
         )
         reporting_currency.change(
             fn=refresh_dashboard,
-            inputs=[mode_toggle, reporting_currency],
+            inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
+            outputs=[
+                mode_banner_html,
+                dashboard["summary_table"],
+                dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
+            ],
+        )
+        dashboard_portfolio_filter.change(
+            fn=refresh_dashboard,
+            inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],

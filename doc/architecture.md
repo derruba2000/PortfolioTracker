@@ -22,7 +22,8 @@ The current implementation includes:
 | UI | Gradio `Blocks` | Local multi-tab interface |
 | Database | SQLite | Local persistent store |
 | ORM | SQLAlchemy 2.x | Schema and queries |
-| Data | Pandas | Tabular transforms and charts |
+| Data | Pandas, NumPy, SciPy | Tabular transforms and financial calculations |
+| Visualization | Plotly | Interactive performance charts embedded in Gradio |
 | Config | `python-dotenv` | `.env` loading |
 | Market Data | `yfinance` | Security and FX history |
 
@@ -135,9 +136,41 @@ Cross-tab orchestration lives in `app.py`:
 - `services/analytics.py`: positions, allocation, dashboard summary, realized P&L, TWR, tax-prep data.
 - `services/rebalancing.py`: target allocations and drift/trade suggestions.
 - `services/benchmarks.py`: benchmark selection and overlay normalization.
+- `services/db_performance.py`: historical values, held-asset prices, benchmark
+  prices, and external cash-flow extraction from SQLite.
+- `services/performance.py`: TWR, MWR/XIRR, drawdown, risk, benchmark,
+  correlation, and stress-test calculations.
 - `services/securities.py`: security CRUD and ticker defaults.
 - `services/reference_data.py`: currency and asset class lookup/validation.
 - `services/query_filters.py`: simulated-account exclusion helpers.
+
+## Performance Analysis Engine
+
+The performance feature separates database extraction, financial calculations,
+and presentation:
+
+```mermaid
+flowchart LR
+    DB[(SQLite)] --> Extract[db_performance.py]
+    Extract --> Values[Daily portfolio values]
+    Extract --> Flows[Deposits and withdrawals]
+    Extract --> Prices[Asset and benchmark closes]
+    Values --> Math[performance.py]
+    Flows --> Math
+    Prices --> Math
+    Math --> Plotly[Plotly figures and metric tables]
+    Plotly --> Tabs[Gradio Performance sub-tabs]
+```
+
+`db_performance.py` applies the Live/Sandbox account firewall, values each day
+in a single reporting currency, and retrieves only stored prices on or before
+the valuation date. `performance.py` is a mostly pure mathematical layer so its
+return and risk formulas can be tested independently of SQLite and Gradio.
+
+The Gradio Performance tab is split into Returns & Risk, Benchmarking, and
+Advanced Analytics. Benchmark history uses locally stored security prices when
+available through the data layer; the existing benchmark overlay service can
+fetch missing benchmark history on demand.
 
 ## Database Model
 
