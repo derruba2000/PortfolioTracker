@@ -744,15 +744,37 @@ def _convert_currency(
     if source == target:
         return value
 
-    direct_rate = _latest_fx_rate(session, source, target, as_of_date)
+    source_to_usd = _rate_to_usd(session, source, as_of_date)
+    target_to_usd = _rate_to_usd(session, target, as_of_date)
+    if source_to_usd is None:
+        raise ValueError(
+            f"No FX rate is available to normalize {source} to USD on or before "
+            f"{as_of_date.isoformat()}."
+        )
+    if target_to_usd is None or target_to_usd == 0:
+        raise ValueError(
+            f"No FX rate is available to convert USD to {target} on or before "
+            f"{as_of_date.isoformat()}."
+        )
+    return value * source_to_usd / target_to_usd
+
+
+def _rate_to_usd(
+    session: Session,
+    currency: str,
+    as_of_date: date,
+) -> Decimal | None:
+    if currency == "USD":
+        return Decimal("1")
+
+    direct_rate = _latest_fx_rate(session, currency, "USD", as_of_date)
     if direct_rate is not None:
-        return value * direct_rate
+        return direct_rate
 
-    inverse_rate = _latest_fx_rate(session, target, source, as_of_date)
+    inverse_rate = _latest_fx_rate(session, "USD", currency, as_of_date)
     if inverse_rate is not None and inverse_rate != 0:
-        return value / inverse_rate
-
-    return value
+        return Decimal("1") / inverse_rate
+    return None
 
 
 def _latest_fx_rate(

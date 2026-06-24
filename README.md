@@ -54,8 +54,8 @@ Nested tabs:
 ## Main Workflows
 
 The Dashboard reporting-currency filter converts all position values, totals, and
-allocation charts to GBP, EUR, or USD using the latest available FX close on or
-before today.
+allocation charts to GBP, EUR, or USD. Every conversion is normalized through
+USD using the latest available FX closes on or before today.
 
 ### 1) Master Data
 

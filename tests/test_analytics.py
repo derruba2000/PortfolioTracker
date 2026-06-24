@@ -223,17 +223,24 @@ def test_dashboard_reporting_currency_converts_prices_costs_values_and_charts(
                 ),
                 FxRateHistory(
                     base_currency_code="EUR",
-                    quote_currency_code="GBP",
-                    symbol="EURGBP=X",
+                    quote_currency_code="USD",
+                    symbol="EURUSD=X",
                     date=date(2026, 1, 2),
-                    close=Decimal("0.80"),
+                    close=Decimal("1.20"),
+                ),
+                FxRateHistory(
+                    base_currency_code="GBP",
+                    quote_currency_code="USD",
+                    symbol="GBPUSD=X",
+                    date=date(2026, 1, 2),
+                    close=Decimal("1.50"),
                 ),
                 FxRateHistory(
                     base_currency_code="EUR",
-                    quote_currency_code="GBP",
-                    symbol="EURGBP=X",
+                    quote_currency_code="USD",
+                    symbol="EURUSD=X",
                     date=date(2026, 1, 4),
-                    close=Decimal("0.90"),
+                    close=Decimal("1.35"),
                 ),
             ]
         )
@@ -329,3 +336,48 @@ def test_dashboard_reporting_currency_uses_inverse_fx_pair(monkeypatch) -> None:
 
     assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("100")
     assert Decimal(positions.loc[0, "Market Value"]) == Decimal("100")
+
+
+def test_dashboard_reporting_currency_rejects_missing_usd_leg(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="EUR Account", currency_code="EUR")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="VWCE.AS",
+            name="Global ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="EUR",
+        )
+        session.add(
+            Transaction(
+                portfolio=portfolio,
+                security=security,
+                date=datetime(2026, 1, 1),
+                type=TransactionType.BUY,
+                quantity=1,
+                price=Decimal("100"),
+                fees=Decimal("0"),
+                total_value=Decimal("100"),
+                currency_exchange_rate=Decimal("1"),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    try:
+        current_positions(
+            reporting_currency="GBP",
+            as_of_date=date(2026, 1, 3),
+        )
+    except ValueError as exc:
+        assert "normalize EUR to USD" in str(exc)
+    else:
+        raise AssertionError("Expected a missing USD FX leg to fail visibly.")
