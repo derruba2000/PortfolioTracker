@@ -13,6 +13,7 @@ from portfolio_management.db.models import (
     AssetClass,
     Benchmark,
     Broker,
+    FxRateHistory,
     Portfolio,
     PriceHistory,
     Security,
@@ -84,6 +85,84 @@ def test_rebalance_report_compares_actual_to_targets(monkeypatch) -> None:
     assert Decimal(str(report.loc[0, "Target %"])) == Decimal("60")
     assert report.loc[0, "Action"] == "SELL"
     assert Decimal(str(report.loc[0, "Trade Value"])) == Decimal("400")
+
+
+def test_rebalance_uses_selected_account_currency_and_account_type(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(
+            broker=broker,
+            name="Paper GBP",
+            currency_code="GBP",
+            is_simulated=True,
+        )
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="USD-ASSET",
+            name="USD Asset",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=1,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("100"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.DEPOSIT,
+                    quantity=20,
+                    price=Decimal("1"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("20"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 1),
+                    close=Decimal("100"),
+                ),
+                FxRateHistory(
+                    base_currency_code="GBP",
+                    quote_currency_code="USD",
+                    symbol="GBPUSD=X",
+                    date=date(2026, 1, 1),
+                    close=Decimal("1.25"),
+                ),
+            ]
+        )
+        session.commit()
+        account_choice = f"{account.id} | Broker / Paper GBP [TEST]"
+
+    _patch_session(monkeypatch, engine)
+    create_target_allocation(account_choice, "EQUITY", "50")
+    create_target_allocation(account_choice, "CASH", "50")
+
+    # The report must infer this is a paper account even if the caller still
+    # passes the default Live Mode.
+    report = rebalance_report(account_choice)
+    by_class = report.set_index("Asset Class")
+
+    assert Decimal(by_class.loc["EQUITY", "Current Value"]) == Decimal("80")
+    assert Decimal(by_class.loc["CASH", "Current Value"]) == Decimal("20")
+    assert Decimal(by_class.loc["EQUITY", "Actual %"]) == Decimal("80")
+    assert Decimal(by_class.loc["CASH", "Actual %"]) == Decimal("20")
+    assert by_class.loc["EQUITY", "Action"] == "SELL"
+    assert Decimal(by_class.loc["EQUITY", "Trade Value"]) == Decimal("30")
+    assert by_class.loc["CASH", "Action"] == "BUY"
+    assert Decimal(by_class.loc["CASH", "Trade Value"]) == Decimal("30")
 
 
 def test_tax_prep_report_includes_dividends(monkeypatch) -> None:

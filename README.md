@@ -86,6 +86,13 @@ Delta table paths configured in Settings:
 - Existing symbol/date rows are updated and new rows are inserted.
 - Import failures are stored in `import_error_logs`.
 
+`Import / Export > Export Portfolio Data` creates downloadable CSV files for
+positions, transactions, and portfolio KPIs. Exports support Live,
+Paper/Sandbox/Test, All Accounts, and individual-portfolio filters. Position and
+KPI exports support GBP, EUR, or USD reporting currency. KPI rows contain TWR,
+MWR, drawdown, volatility, Sharpe and Sortino ratios plus benchmark-specific
+return, Alpha, Beta, Tracking Error, and R-Squared columns.
+
 ### 4) Analytics, Rebalance, Tax
 
 - Dashboard shows summary, positions, and allocation charts.

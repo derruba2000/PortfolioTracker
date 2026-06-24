@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from portfolio_management.db.models import Account, AccountStrategy, AssetClass, Broker, Strategy
 from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import account_choices, parse_choice_id
-from portfolio_management.services.analytics import LIVE_MODE, current_positions
+from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE, current_positions
 
 
 def create_target_allocation(
@@ -99,13 +99,21 @@ def rebalance_report(
             return _rebalance_dataframe([])
         broker_name = account.broker.name
         account_name = account.name
+        account_currency = account.currency_code
+        effective_mode = SANDBOX_MODE if account.is_simulated else LIVE_MODE
         target_rows = session.execute(
             select(AccountStrategy, Strategy)
             .join(AccountStrategy.strategy)
             .where(AccountStrategy.account_id == account.id)
         ).all()
 
-    positions = current_positions(account_mode=account_mode)
+    # Rebalancing one account must use that account's own type and currency.
+    # Otherwise mixed-currency positions are summed as if their units matched,
+    # and a paper account disappears while the global UI remains in Live Mode.
+    positions = current_positions(
+        account_mode=effective_mode,
+        reporting_currency=account_currency,
+    )
     if positions.empty:
         total_value = Decimal("0")
         actual_by_asset_class: dict[str, Decimal] = {}

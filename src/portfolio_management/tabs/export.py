@@ -7,6 +7,20 @@ from typing import Any
 import gradio as gr
 
 from portfolio_management.config import load_settings, save_settings
+from portfolio_management.services.analysis_filters import (
+    ACCOUNT_SCOPE_CHOICES,
+    ALL_PORTFOLIOS,
+    parse_portfolio_filter,
+    portfolio_filter_choices,
+)
+from portfolio_management.services.analytics import LIVE_MODE
+from portfolio_management.services.csv_exports import (
+    export_portfolio_correlations_csv,
+    export_portfolio_kpis_csv,
+    export_portfolio_time_series_csv,
+    export_positions_csv,
+    export_transactions_csv,
+)
 from portfolio_management.services.import_errors import log_import_error
 from portfolio_management.services.market_data import import_market_data_from_delta
 from portfolio_management.services.securities import list_securities
@@ -119,6 +133,71 @@ def _import_market_data(prices_path: str, fx_path: str) -> tuple[str, str, str]:
         return prices_clean, fx_clean, f"Could not merge market data: {exc}"
 
 
+def _export_scope_changed(account_mode: str) -> object:
+    return gr.update(
+        choices=portfolio_filter_choices(account_mode),
+        value=ALL_PORTFOLIOS,
+    )
+
+
+def _export_positions(
+    account_mode: str,
+    portfolio_choice: str | int | None,
+    reporting_currency: str,
+) -> str:
+    return export_positions_csv(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+
+
+def _export_transactions(
+    account_mode: str,
+    portfolio_choice: str | int | None,
+) -> str:
+    return export_transactions_csv(
+        account_mode=account_mode,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+
+
+def _export_portfolio_kpis(
+    account_mode: str,
+    portfolio_choice: str | int | None,
+    reporting_currency: str,
+    risk_free_rate_percent: float,
+) -> str:
+    return export_portfolio_kpis_csv(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+        risk_free_rate=float(risk_free_rate_percent or 0) / 100,
+    )
+
+
+def _export_portfolio_correlations(
+    account_mode: str,
+    portfolio_choice: str | int | None,
+) -> str:
+    return export_portfolio_correlations_csv(
+        account_mode=account_mode,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+
+
+def _export_portfolio_time_series(
+    account_mode: str,
+    portfolio_choice: str | int | None,
+    reporting_currency: str,
+) -> str:
+    return export_portfolio_time_series_csv(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+
+
 def build_export_tab() -> dict[str, Any]:
     settings = load_settings()
     default_path = str(settings.export_symbols_csv_path) if settings.export_symbols_csv_path else ""
@@ -149,6 +228,122 @@ def build_export_tab() -> dict[str, Any]:
                     fn=_export_symbols_csv,
                     inputs=[csv_path_input],
                     outputs=[export_status],
+                )
+            with gr.Tab("Export Portfolio Data"):
+                gr.Markdown(
+                    "Export raw positions, transactions, or one-row-per-portfolio KPI "
+                    "data using the same account-scope and portfolio filters. KPI exports "
+                    "include separate comparison columns for every configured benchmark. "
+                    "CSV values are not formatted as dashboard links or display strings."
+                )
+                with gr.Row():
+                    export_account_scope = gr.Radio(
+                        label="Account Scope",
+                        choices=ACCOUNT_SCOPE_CHOICES,
+                        value=LIVE_MODE,
+                    )
+                    export_portfolio_filter = gr.Dropdown(
+                        label="Portfolio",
+                        choices=portfolio_filter_choices(LIVE_MODE),
+                        value=ALL_PORTFOLIOS,
+                        allow_custom_value=False,
+                    )
+                    export_reporting_currency = gr.Dropdown(
+                        label="Reporting Currency",
+                        choices=["GBP", "EUR", "USD"],
+                        value="GBP",
+                        allow_custom_value=False,
+                    )
+                    export_risk_free_rate = gr.Number(
+                        label="Annual Risk-Free Rate (%)",
+                        value=4.0,
+                        minimum=0,
+                    )
+                with gr.Row():
+                    export_positions_button = gr.Button(
+                        "Create Positions CSV",
+                        variant="primary",
+                    )
+                    export_transactions_button = gr.Button(
+                        "Create Transactions CSV",
+                        variant="primary",
+                    )
+                    export_kpis_button = gr.Button(
+                        "Create Portfolio KPIs CSV",
+                        variant="primary",
+                    )
+                    export_correlations_button = gr.Button(
+                        "Create Correlation Matrix CSV",
+                        variant="primary",
+                    )
+                    export_time_series_button = gr.Button(
+                        "Create Performance Time Series CSV",
+                        variant="primary",
+                    )
+                with gr.Row():
+                    positions_csv_file = gr.File(
+                        label="Positions CSV",
+                        interactive=False,
+                    )
+                    transactions_csv_file = gr.File(
+                        label="Transactions CSV",
+                        interactive=False,
+                    )
+                    portfolio_kpis_csv_file = gr.File(
+                        label="Portfolio KPIs CSV",
+                        interactive=False,
+                    )
+                    correlations_csv_file = gr.File(
+                        label="Correlation Matrix CSV",
+                        interactive=False,
+                    )
+                    time_series_csv_file = gr.File(
+                        label="Performance Time Series CSV",
+                        interactive=False,
+                    )
+
+                export_account_scope.change(
+                    fn=_export_scope_changed,
+                    inputs=[export_account_scope],
+                    outputs=[export_portfolio_filter],
+                )
+                export_positions_button.click(
+                    fn=_export_positions,
+                    inputs=[
+                        export_account_scope,
+                        export_portfolio_filter,
+                        export_reporting_currency,
+                    ],
+                    outputs=[positions_csv_file],
+                )
+                export_transactions_button.click(
+                    fn=_export_transactions,
+                    inputs=[export_account_scope, export_portfolio_filter],
+                    outputs=[transactions_csv_file],
+                )
+                export_kpis_button.click(
+                    fn=_export_portfolio_kpis,
+                    inputs=[
+                        export_account_scope,
+                        export_portfolio_filter,
+                        export_reporting_currency,
+                        export_risk_free_rate,
+                    ],
+                    outputs=[portfolio_kpis_csv_file],
+                )
+                export_correlations_button.click(
+                    fn=_export_portfolio_correlations,
+                    inputs=[export_account_scope, export_portfolio_filter],
+                    outputs=[correlations_csv_file],
+                )
+                export_time_series_button.click(
+                    fn=_export_portfolio_time_series,
+                    inputs=[
+                        export_account_scope,
+                        export_portfolio_filter,
+                        export_reporting_currency,
+                    ],
+                    outputs=[time_series_csv_file],
                 )
             with gr.Tab("Import Market Data"):
                 gr.Markdown(
@@ -189,6 +384,13 @@ def build_export_tab() -> dict[str, Any]:
     return {
         "csv_path_input": csv_path_input,
         "export_status": export_status,
+        "export_account_scope": export_account_scope,
+        "export_portfolio_filter": export_portfolio_filter,
+        "positions_csv_file": positions_csv_file,
+        "transactions_csv_file": transactions_csv_file,
+        "portfolio_kpis_csv_file": portfolio_kpis_csv_file,
+        "correlations_csv_file": correlations_csv_file,
+        "time_series_csv_file": time_series_csv_file,
         "prices_path": prices_path,
         "fx_path": fx_path,
         "import_status": import_status,
