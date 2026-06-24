@@ -381,3 +381,126 @@ def test_dashboard_reporting_currency_rejects_missing_usd_leg(monkeypatch) -> No
         assert "normalize EUR to USD" in str(exc)
     else:
         raise AssertionError("Expected a missing USD FX leg to fail visibly.")
+
+
+def test_dashboard_uses_only_transactions_and_latest_price_on_or_before_as_of_date(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Real", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="AAPL",
+            name="Apple Inc.",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=2,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("200"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 4),
+                    type=TransactionType.BUY,
+                    quantity=5,
+                    price=Decimal("500"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("2500"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 2),
+                    close_price=Decimal("110"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 4),
+                    close_price=Decimal("999"),
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    positions = current_positions(as_of_date=date(2026, 1, 3))
+    summary = dashboard_summary(as_of_date=date(2026, 1, 3))
+
+    assert positions.loc[0, "Quantity"] == "2"
+    assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("110")
+    assert Decimal(positions.loc[0, "Market Value"]) == Decimal("220")
+    assert Decimal(summary.loc[0, "Value"]) == Decimal("220")
+
+
+def test_dashboard_resolves_unique_exchange_qualified_price_symbol(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Real", currency_code="GBP")
+        portfolio = Portfolio(account=account, name="Core")
+        holding_security = Security(
+            ticker="VWRP",
+            name="Vanguard FTSE All-World UCITS ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="GBP",
+        )
+        priced_security = Security(
+            ticker="VWRP.L",
+            name="Vanguard FTSE All-World UCITS ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="GBP",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=holding_security,
+                    date=datetime(2026, 6, 23),
+                    type=TransactionType.BUY,
+                    quantity=6,
+                    price=Decimal("141.22"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("847.32"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=priced_security,
+                    symbol="VWRP.L",
+                    date=date(2026, 6, 24),
+                    close_price=Decimal("141.36"),
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    positions = current_positions(as_of_date=date(2026, 6, 24))
+
+    assert positions.loc[0, "Ticker"] == "VWRP"
+    assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("141.36")
+    assert Decimal(positions.loc[0, "Market Value"]) == Decimal("848.16")

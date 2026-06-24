@@ -358,6 +358,8 @@ def _calculate_position_records(
     cash_state: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
 
     for transaction, portfolio, account, broker, security in rows:
+        if transaction.date.date() > as_of_date:
+            continue
         if security is None:
             _apply_cash_transaction(cash_state, transaction, portfolio, account)
             continue
@@ -397,9 +399,8 @@ def _calculate_position_records(
 
         latest_price = _latest_price(session, security, as_of_date=as_of_date)
         average_cost = cost_basis / quantity if quantity else Decimal("0")
-        # When no price history exists, use cost basis as best-effort market value
-        market_value = quantity * latest_price if latest_price is not None else cost_basis
-        unrealized = market_value - cost_basis
+        market_value = quantity * latest_price if latest_price is not None else None
+        unrealized = market_value - cost_basis if market_value is not None else None
         if reporting_currency:
             average_cost = _convert_currency(
                 session,
@@ -416,20 +417,22 @@ def _calculate_position_records(
                     reporting_currency,
                     as_of_date,
                 )
-            market_value = _convert_currency(
-                session,
-                market_value,
-                security.currency_code,
-                reporting_currency,
-                as_of_date,
-            )
-            unrealized = _convert_currency(
-                session,
-                unrealized,
-                security.currency_code,
-                reporting_currency,
-                as_of_date,
-            )
+            if market_value is not None:
+                market_value = _convert_currency(
+                    session,
+                    market_value,
+                    security.currency_code,
+                    reporting_currency,
+                    as_of_date,
+                )
+            if unrealized is not None:
+                unrealized = _convert_currency(
+                    session,
+                    unrealized,
+                    security.currency_code,
+                    reporting_currency,
+                    as_of_date,
+                )
 
         records.append(
             {
@@ -445,8 +448,8 @@ def _calculate_position_records(
                 "Quantity": str(quantity),
                 "Average Cost": str(average_cost),
                 "Latest Price": str(latest_price) if latest_price is not None else "",
-                "Market Value": str(market_value),
-                "Unrealized P&L": str(unrealized),
+                "Market Value": str(market_value) if market_value is not None else "",
+                "Unrealized P&L": str(unrealized) if unrealized is not None else "",
             }
         )
 
@@ -709,7 +712,44 @@ def _latest_price(
     security: Security,
     as_of_date: date | None = None,
 ) -> Decimal | None:
-    statement = select(PriceHistory).where(PriceHistory.security_id == security.id)
+    direct_price = _latest_price_for_security_id(
+        session,
+        security.id,
+        as_of_date=as_of_date,
+    )
+    if direct_price is not None:
+        return direct_price
+
+    # A transaction may use a base exchange ticker (for example VWRP) while
+    # market data uses the Yahoo/exchange-qualified symbol (VWRP.L). Use that
+    # alias only when it resolves to one priced security in the same currency.
+    ticker_base = security.ticker.upper().split(".", 1)[0]
+    alias_prices: list[Decimal] = []
+    securities = session.scalars(
+        select(Security).where(Security.currency_code == security.currency_code)
+    ).all()
+    for candidate in securities:
+        if candidate.id == security.id:
+            continue
+        if candidate.ticker.upper().split(".", 1)[0] != ticker_base:
+            continue
+        candidate_price = _latest_price_for_security_id(
+            session,
+            candidate.id,
+            as_of_date=as_of_date,
+        )
+        if candidate_price is not None:
+            alias_prices.append(candidate_price)
+
+    return alias_prices[0] if len(alias_prices) == 1 else None
+
+
+def _latest_price_for_security_id(
+    session: Session,
+    security_id: int,
+    as_of_date: date | None = None,
+) -> Decimal | None:
+    statement = select(PriceHistory).where(PriceHistory.security_id == security_id)
     if as_of_date is not None:
         statement = statement.where(PriceHistory.date <= as_of_date)
     price = session.scalar(statement.order_by(PriceHistory.date.desc()).limit(1))
