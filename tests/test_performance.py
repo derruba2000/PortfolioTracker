@@ -33,6 +33,10 @@ from portfolio_management.services.performance import (
     historical_stress_tests,
     risk_metrics,
 )
+from portfolio_management.tabs.performance import (
+    ACCOUNT_SCOPE_FILTER_CHOICES,
+    _portfolio_value_figure,
+)
 
 
 def test_performance_data_layer_extracts_values_prices_and_external_flows(
@@ -216,3 +220,30 @@ def test_risk_benchmark_correlation_and_stress_metrics() -> None:
     assert np.isclose(comparison["R-Squared"], 1.0)
     assert set(correlations.columns) == {"A", "B"}
     assert np.isclose(stress.iloc[0]["Return"], -0.20)
+
+
+def test_portfolio_value_figure_formats_currency_and_drill_down_name() -> None:
+    figure = _portfolio_value_figure(
+        pd.DataFrame(
+            {
+                "Date": ["2026-01-01", "2026-01-02"],
+                "Portfolio Value": [1000.0, 1100.0],
+            }
+        ),
+        "EUR",
+        "42 | Broker / Account / Growth [LIVE]",
+    )
+
+    assert figure.layout.title.text == "Growth Value Evolution"
+    assert figure.layout.yaxis.title.text == "Value (EUR)"
+    assert figure.layout.yaxis.tickprefix == "EUR "
+    assert figure.data[0].name == "Growth"
+    assert list(figure.data[0].y) == [1000.0, 1100.0]
+
+
+def test_performance_environment_filters_expose_production_test_and_all() -> None:
+    assert [label for label, _ in ACCOUNT_SCOPE_FILTER_CHOICES] == [
+        "Production",
+        "Test",
+        "All",
+    ]

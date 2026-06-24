@@ -8,9 +8,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from portfolio_management.services.analytics import LIVE_MODE
+from portfolio_management.services.analytics import (
+    ALL_ACCOUNTS_MODE,
+    LIVE_MODE,
+    SANDBOX_MODE,
+)
 from portfolio_management.services.analysis_filters import (
-    ACCOUNT_SCOPE_CHOICES,
     ALL_PORTFOLIOS,
     parse_portfolio_filter,
     portfolio_filter_choices,
@@ -32,6 +35,11 @@ from portfolio_management.services.performance import (
 )
 
 REPORTING_CURRENCIES = ["GBP", "EUR", "USD"]
+ACCOUNT_SCOPE_FILTER_CHOICES = [
+    ("Production", LIVE_MODE),
+    ("Test", SANDBOX_MODE),
+    ("All", ALL_ACCOUNTS_MODE),
+]
 
 
 def _refresh_performance(account_mode: str) -> object:
@@ -39,16 +47,21 @@ def _refresh_performance(account_mode: str) -> object:
     return _returns_figure(calculate_twr(values, flows), calculate_mwr(values, flows))
 
 
-def refresh_performance_for_mode(account_mode: str) -> tuple[object, ...]:
+def refresh_performance_for_mode(
+    account_mode: str,
+    benchmark_choice: str | None,
+    reporting_currency: str,
+    risk_free_rate_percent: float,
+) -> tuple[object, ...]:
     choices = portfolio_filter_choices(account_mode)
     return (
         gr.update(choices=choices, value=ALL_PORTFOLIOS),
         *refresh_performance_analysis(
-            default_benchmark_choice(),
+            benchmark_choice,
             account_mode,
             ALL_PORTFOLIOS,
-            "GBP",
-            4.0,
+            reporting_currency,
+            risk_free_rate_percent,
         ),
     )
 
@@ -92,6 +105,7 @@ def refresh_performance_analysis(
     stress = historical_stress_tests(values)
 
     return (
+        _portfolio_value_figure(values, reporting_currency, portfolio_choice),
         _returns_figure(twr, mwr),
         _drawdown_figure(drawdown),
         _metric_table(risk),
@@ -108,8 +122,8 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
     with gr.Tab("Performance"):
         with gr.Row():
             account_scope = gr.Radio(
-                label="Account Scope",
-                choices=ACCOUNT_SCOPE_CHOICES,
+                label="Environment",
+                choices=ACCOUNT_SCOPE_FILTER_CHOICES,
                 value=LIVE_MODE,
             )
             portfolio_filter = gr.Dropdown(
@@ -132,6 +146,16 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
             refresh_button = gr.Button("Refresh Performance", variant="primary")
 
         with gr.Tabs():
+            with gr.Tab("Value Evolution"):
+                portfolio_value_plot = gr.Plot(
+                    value=lambda: _portfolio_value_figure(
+                        performance_dataset(LIVE_MODE, "GBP")[0],
+                        "GBP",
+                        ALL_PORTFOLIOS,
+                    ),
+                    label="Portfolio Value Evolution",
+                )
+
             with gr.Tab("Returns & Risk"):
                 performance_plot = gr.Plot(
                     value=lambda: _refresh_performance(LIVE_MODE),
@@ -189,6 +213,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
                 risk_free_rate,
             ],
             outputs=[
+                portfolio_value_plot,
                 performance_plot,
                 drawdown_plot,
                 risk_metrics_table,
@@ -208,6 +233,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
                 risk_free_rate,
             ],
             outputs=[
+                portfolio_value_plot,
                 performance_plot,
                 drawdown_plot,
                 risk_metrics_table,
@@ -227,6 +253,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
                 risk_free_rate,
             ],
             outputs=[
+                portfolio_value_plot,
                 performance_plot,
                 drawdown_plot,
                 risk_metrics_table,
@@ -238,9 +265,35 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
         )
         account_scope.change(
             fn=refresh_performance_for_mode,
-            inputs=[account_scope],
+            inputs=[
+                account_scope,
+                benchmark_choice,
+                reporting_currency,
+                risk_free_rate,
+            ],
             outputs=[
                 portfolio_filter,
+                portfolio_value_plot,
+                performance_plot,
+                drawdown_plot,
+                risk_metrics_table,
+                benchmark_plot,
+                benchmark_metrics_table,
+                correlation_plot,
+                stress_plot,
+            ],
+        )
+        reporting_currency.change(
+            fn=refresh_performance_analysis,
+            inputs=[
+                benchmark_choice,
+                account_scope,
+                portfolio_filter,
+                reporting_currency,
+                risk_free_rate,
+            ],
+            outputs=[
+                portfolio_value_plot,
                 performance_plot,
                 drawdown_plot,
                 risk_metrics_table,
@@ -254,6 +307,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
     return {
         "account_scope": account_scope,
         "portfolio_filter": portfolio_filter,
+        "portfolio_value_plot": portfolio_value_plot,
         "performance_plot": performance_plot,
         "drawdown_plot": drawdown_plot,
         "risk_metrics_table": risk_metrics_table,
@@ -262,6 +316,52 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
         "correlation_plot": correlation_plot,
         "stress_plot": stress_plot,
     }
+
+
+def _portfolio_value_figure(
+    values: pd.DataFrame,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = ALL_PORTFOLIOS,
+) -> go.Figure:
+    currency = str(reporting_currency or "GBP").upper()
+    selected_portfolio = _portfolio_display_name(portfolio_choice)
+    if values.empty:
+        return _empty_figure(f"{selected_portfolio} Value Evolution")
+
+    figure = go.Figure(
+        go.Scatter(
+            x=values["Date"],
+            y=values["Portfolio Value"],
+            mode="lines",
+            name=selected_portfolio,
+            fill="tozeroy",
+            line={"color": "#0ea5e9", "width": 2},
+            fillcolor="rgba(14, 165, 233, 0.18)",
+            hovertemplate=(
+                "%{x|%d %b %Y}<br>"
+                f"{currency} %{{y:,.2f}}"
+                "<extra></extra>"
+            ),
+        )
+    )
+    figure.update_layout(
+        title=f"{selected_portfolio} Value Evolution",
+        xaxis_title="Date",
+        yaxis_title=f"Value ({currency})",
+        hovermode="x unified",
+        separators=".,",
+    )
+    figure.update_yaxes(tickprefix=f"{currency} ", tickformat=",.2f")
+    return figure
+
+
+def _portfolio_display_name(portfolio_choice: str | int | None) -> str:
+    if portfolio_choice in (None, "", ALL_PORTFOLIOS):
+        return ALL_PORTFOLIOS
+    choice = str(portfolio_choice)
+    details = choice.split(" | ", 1)[-1]
+    portfolio_path = details.rsplit(" [", 1)[0]
+    return portfolio_path.rsplit(" / ", 1)[-1]
 
 
 def _returns_figure(twr: pd.DataFrame, mwr: pd.DataFrame) -> go.Figure:
