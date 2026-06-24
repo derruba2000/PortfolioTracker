@@ -266,6 +266,16 @@ def _portfolio_value(
 ) -> Decimal:
     quantities: defaultdict[int, Decimal] = defaultdict(Decimal)
     cash: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
+    explicitly_funded_portfolios = {
+        portfolio.id
+        for transaction, portfolio, _, _, security in rows
+        if (
+            security is None
+            and transaction.date.date() <= as_of_date
+            and transaction.type
+            in {TransactionType.DEPOSIT, TransactionType.WITHDRAWAL}
+        )
+    }
 
     for transaction, portfolio, account, _, security in rows:
         if transaction.date.date() > as_of_date:
@@ -287,10 +297,12 @@ def _portfolio_value(
         )
         if transaction.type == TransactionType.BUY:
             quantities[security.id] += transaction.quantity
-            cash[cash_key] -= trade_value
+            if portfolio.id in explicitly_funded_portfolios:
+                cash[cash_key] -= trade_value
         elif transaction.type == TransactionType.SELL:
             quantities[security.id] -= transaction.quantity
-            cash[cash_key] += trade_value
+            if portfolio.id in explicitly_funded_portfolios:
+                cash[cash_key] += trade_value
         elif transaction.type == TransactionType.DIVIDEND:
             cash[cash_key] += trade_value
         elif transaction.type == TransactionType.SPLIT:

@@ -93,6 +93,13 @@ KPI exports support GBP, EUR, or USD reporting currency. KPI rows contain TWR,
 MWR, drawdown, volatility, Sharpe and Sortino ratios plus benchmark-specific
 return, Alpha, Beta, Tracking Error, and R-Squared columns.
 
+The same tab also exports:
+
+- A tabular correlation matrix per portfolio, with one row and column per held symbol.
+- A daily portfolio-performance time series containing value, daily return, TWR,
+  MWR, drawdown, growth index, and growth/return/relative-performance columns for
+  every configured benchmark.
+
 ### 4) Analytics, Rebalance, Tax
 
 - Dashboard shows summary, positions, and allocation charts.

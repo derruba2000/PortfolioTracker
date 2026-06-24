@@ -108,6 +108,62 @@ def test_performance_data_layer_extracts_values_prices_and_external_flows(
     assert list(prices["Close"]) == [10.0, 11.0]
 
 
+def test_portfolio_value_without_explicit_cash_uses_full_holding_value(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Account", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Portfolio")
+        security = Security(
+            ticker="ETF",
+            name="ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=10,
+                    price=Decimal("10"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("100"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 1),
+                    close=Decimal("10"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 2),
+                    close=Decimal("11"),
+                ),
+            ]
+        )
+        session.commit()
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    monkeypatch.setattr(
+        "portfolio_management.services.db_performance.get_session_factory",
+        lambda: factory,
+    )
+
+    values = portfolio_value_history(
+        reporting_currency="USD",
+        end_date=date(2026, 1, 2),
+    )
+
+    assert list(values["Portfolio Value"]) == [100.0, 110.0]
+
+
 def test_return_drawdown_and_mwr_calculations() -> None:
     values = pd.DataFrame(
         {
