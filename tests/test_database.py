@@ -12,9 +12,11 @@ from portfolio_management.db.models import (
     AccountStrategy,
     Benchmark,
     Broker,
+    ImportErrorLog,
     Strategy,
 )
 from portfolio_management.db.seed import seed_defaults
+from portfolio_management.services.import_errors import add_import_error
 
 
 def test_seed_defaults_is_idempotent() -> None:
@@ -58,6 +60,26 @@ def test_sqlite_decimal_round_trips_exactly() -> None:
         assert account_strategy.allocation_weight == Decimal(
             "0.3333333333"
         )
+
+
+def test_import_error_log_records_pipeline_message_and_timestamp() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        add_import_error(
+            session,
+            pipeline_name="test_pipeline",
+            error_message="source row could not be parsed",
+        )
+        session.commit()
+
+        error = session.scalar(select(ImportErrorLog))
+
+    assert error is not None
+    assert error.pipeline_name == "test_pipeline"
+    assert error.error_message == "source row could not be parsed"
+    assert error.timestamp is not None
 
 
 def test_transaction_schema_migration_preserves_decimal_values() -> None:
@@ -226,3 +248,69 @@ def test_transaction_schema_migration_rejects_fractional_quantity() -> None:
         assert "Cannot migrate quantity to INTEGER without data loss" in str(exc)
     else:
         raise AssertionError("Expected migration to fail for fractional quantity.")
+
+
+def test_history_schema_migration_adds_ohlcv_and_preserves_close_values() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE price_history"))
+        connection.execute(text("DROP TABLE fx_rate_history"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE price_history (
+                    security_id INTEGER NOT NULL,
+                    date DATE NOT NULL,
+                    close_price VARCHAR NOT NULL,
+                    PRIMARY KEY (security_id, date)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE fx_rate_history (
+                    base_currency_code VARCHAR(3) NOT NULL,
+                    quote_currency_code VARCHAR(3) NOT NULL,
+                    date DATE NOT NULL,
+                    rate VARCHAR NOT NULL,
+                    PRIMARY KEY (base_currency_code, quote_currency_code, date)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO price_history VALUES (1, '2026-06-20', '101.5')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO fx_rate_history VALUES ('EUR', 'GBP', '2026-06-20', '0.85')"
+            )
+        )
+
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        price_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(price_history)"))
+        }
+        fx_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(fx_rate_history)"))
+        }
+        price = connection.execute(
+            text("SELECT symbol, open, high, low, close, volume FROM price_history")
+        ).one()
+        fx_rate = connection.execute(
+            text("SELECT symbol, open, high, low, close, volume FROM fx_rate_history")
+        ).one()
+
+    assert {"symbol", "date", "open", "high", "low", "close", "volume"} <= price_columns
+    assert {"symbol", "date", "open", "high", "low", "close", "volume"} <= fx_columns
+    assert Decimal(str(price.close)) == Decimal("101.5")
+    assert Decimal(str(fx_rate.close)) == Decimal("0.85")
+    assert fx_rate.symbol == "EURGBP=X"

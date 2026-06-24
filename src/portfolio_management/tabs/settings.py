@@ -15,6 +15,16 @@ def _save_theme(theme_name: str) -> str:
     return f"Saved theme '{updated.theme_name}'. Reloading now."
 
 
+def _save_market_data_paths(prices_path: str, fx_path: str) -> str:
+    updated = save_settings(
+        market_prices_delta_path=prices_path.strip() or None,
+        fx_rates_delta_path=fx_path.strip() or None,
+    )
+    prices = updated.market_prices_delta_path or "(not set)"
+    fx_rates = updated.fx_rates_delta_path or "(not set)"
+    return f"Saved market prices path: {prices}\nSaved FX rates path: {fx_rates}"
+
+
 def build_settings_tab() -> dict[str, Any]:
     settings = load_settings()
 
@@ -49,8 +59,34 @@ def build_settings_tab() -> dict[str, Any]:
             ),
         )
 
+        gr.Markdown("### Market Data Import")
+        gr.Markdown(
+            "Paths may point to local Delta tables or supported object-storage Delta table URIs."
+        )
+        market_prices_delta_path = gr.Textbox(
+            label="Market Prices Delta Table Path",
+            value=str(settings.market_prices_delta_path or ""),
+            placeholder="/path/to/market_prices_delta",
+        )
+        fx_rates_delta_path = gr.Textbox(
+            label="FX Rates Delta Table Path",
+            value=str(settings.fx_rates_delta_path or ""),
+            placeholder="/path/to/fx_rates_delta",
+        )
+        market_data_paths_status = gr.Textbox(label="Import Path Status", interactive=False)
+        save_market_data_paths_button = gr.Button("Save Market Data Paths", variant="primary")
+        save_market_data_paths_button.click(
+            fn=_save_market_data_paths,
+            inputs=[market_prices_delta_path, fx_rates_delta_path],
+            outputs=[market_data_paths_status],
+        )
+
     return {
         "theme_choice": theme_choice,
         "theme_status": theme_status,
         "save_theme_button": save_theme_button,
+        "market_prices_delta_path": market_prices_delta_path,
+        "fx_rates_delta_path": fx_rates_delta_path,
+        "market_data_paths_status": market_data_paths_status,
+        "save_market_data_paths_button": save_market_data_paths_button,
     }

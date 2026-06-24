@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from portfolio_management.db.base import Base
 from portfolio_management.db.types import SqliteDecimal
@@ -174,12 +174,31 @@ class Transaction(Base):
     security: Mapped[Security | None] = relationship(back_populates="transactions")
 
 
+class ImportErrorLog(Base):
+    __tablename__ = "import_error_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    pipeline_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+
 class PriceHistory(Base):
     __tablename__ = "price_history"
 
     security_id: Mapped[int] = mapped_column(ForeignKey("securities.id"), primary_key=True)
     date: Mapped[date] = mapped_column(Date, primary_key=True)
-    close_price: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(32))
+    open: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    high: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    low: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    close: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    close_price = synonym("close")
 
     security: Mapped[Security] = relationship(back_populates="price_history")
 
@@ -194,7 +213,13 @@ class FxRateHistory(Base):
     base_currency_code: Mapped[str] = mapped_column(String(3), primary_key=True)
     quote_currency_code: Mapped[str] = mapped_column(String(3), primary_key=True)
     date: Mapped[date] = mapped_column(Date, primary_key=True)
-    rate: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(32))
+    open: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    high: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    low: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    close: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    rate = synonym("close")
 
     __table_args__ = (
         UniqueConstraint(

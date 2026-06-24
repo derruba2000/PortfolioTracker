@@ -20,15 +20,24 @@ from portfolio_management.tabs._shared import (
 )
 
 
-def dashboard_summary_table(account_mode: str) -> object:
-    summary = dashboard_summary(account_mode=account_mode).copy()
+REPORTING_CURRENCIES = ["GBP", "EUR", "USD"]
+
+
+def dashboard_summary_table(account_mode: str, reporting_currency: str) -> object:
+    summary = dashboard_summary(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+    ).copy()
     if "Value" in summary.columns:
         summary["Value"] = summary["Value"].map(format_two_decimals)
     return summary
 
 
-def dashboard_positions(account_mode: str) -> object:
-    positions = current_positions(account_mode=account_mode).copy()
+def dashboard_positions(account_mode: str, reporting_currency: str) -> object:
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+    ).copy()
     if "Portfolio" in positions.columns and "Portfolio URL" in positions.columns:
         positions["Portfolio"] = positions.apply(
             lambda row: portfolio_link(row["Portfolio"], row["Portfolio URL"]),
@@ -45,14 +54,20 @@ def dashboard_positions(account_mode: str) -> object:
     return positions
 
 
-def refresh_dashboard(account_mode: str) -> tuple[Any, ...]:
+def refresh_dashboard(account_mode: str, reporting_currency: str) -> tuple[Any, ...]:
     """Returns (mode_banner_html, summary, positions, asset_alloc, currency_alloc)."""
     return (
         mode_banner(account_mode),
-        dashboard_summary_table(account_mode=account_mode),
-        dashboard_positions(account_mode=account_mode),
-        allocation_by_asset_class(account_mode=account_mode),
-        allocation_by_currency(account_mode=account_mode),
+        dashboard_summary_table(account_mode, reporting_currency),
+        dashboard_positions(account_mode, reporting_currency),
+        allocation_by_asset_class(
+            account_mode=account_mode,
+            reporting_currency=reporting_currency,
+        ),
+        allocation_by_currency(
+            account_mode=account_mode,
+            reporting_currency=reporting_currency,
+        ),
     )
 
 
@@ -65,24 +80,30 @@ def build_dashboard_tab() -> dict[str, Any]:
             choices=[LIVE_MODE, SANDBOX_MODE],
             value=LIVE_MODE,
         )
+        reporting_currency = gr.Dropdown(
+            label="Reporting Currency",
+            choices=REPORTING_CURRENCIES,
+            value="GBP",
+            allow_custom_value=False,
+        )
         mode_banner_html = gr.HTML(value=mode_banner(LIVE_MODE))
         summary_table = gr.Dataframe(
-            value=lambda: dashboard_summary_table(account_mode=LIVE_MODE),
+            value=lambda: dashboard_summary_table(LIVE_MODE, "GBP"),
             headers=["Metric", "Value"],
             datatype=["str", "str"],
             label="Summary",
             interactive=False,
         )
         positions_table = gr.Dataframe(
-            value=lambda: dashboard_positions(account_mode=LIVE_MODE),
+            value=lambda: dashboard_positions(LIVE_MODE, "GBP"),
             headers=[
                 "Broker", "Account", "Portfolio", "Ticker", "Name",
-                "Asset Class", "Currency", "Quantity", "Average Cost",
+                "Asset Class", "Currency", "Reporting Currency", "Quantity", "Average Cost",
                 "Latest Price", "Market Value", "Unrealized P&L",
             ],
             datatype=[
                 "str", "str", "markdown", "markdown", "str",
-                "str", "str", "str", "str",
+                "str", "str", "str", "str", "str",
                 "str", "str", "str",
             ],
             label="Current Positions",
@@ -90,23 +111,30 @@ def build_dashboard_tab() -> dict[str, Any]:
         )
         with gr.Row():
             asset_allocation_plot = gr.BarPlot(
-                value=lambda: allocation_by_asset_class(account_mode=LIVE_MODE),
+                value=lambda: allocation_by_asset_class(
+                    account_mode=LIVE_MODE,
+                    reporting_currency="GBP",
+                ),
                 x="Asset Class",
                 y="Market Value",
-                title="Allocation by Asset Class",
-                y_title="Market Value",
+                title="Allocation by Asset Class (Reporting Currency)",
+                y_title="Market Value in Selected Currency",
             )
             currency_allocation_plot = gr.BarPlot(
-                value=lambda: allocation_by_currency(account_mode=LIVE_MODE),
+                value=lambda: allocation_by_currency(
+                    account_mode=LIVE_MODE,
+                    reporting_currency="GBP",
+                ),
                 x="Currency",
                 y="Market Value",
-                title="Allocation by Currency",
-                y_title="Market Value",
+                title="Allocation by Source Currency (Reporting Currency)",
+                y_title="Market Value in Selected Currency",
             )
         refresh_dashboard_button = gr.Button("Refresh Dashboard")
 
     return {
         "mode_toggle": mode_toggle,
+        "reporting_currency": reporting_currency,
         "mode_banner_html": mode_banner_html,
         "summary_table": summary_table,
         "positions_table": positions_table,

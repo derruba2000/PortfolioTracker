@@ -116,9 +116,9 @@ Top-level tabs:
 - Rebalance
 - Master Data (nested tabs: Brokers, Accounts, Portfolios, Securities)
 - Transactions Entry (nested tabs: Transactions, Cash Transfer)
-- Market Data
 - Performance
 - Tax
+- Import / Export (nested tabs: Export Symbols, Import Market Data)
 - Settings
 
 Cross-tab orchestration lives in `app.py`:
@@ -195,16 +195,16 @@ erDiagram
         string ticker UK
         string name
         string description
-        enum asset_class
+        string asset_class
         string currency_code
     }
 
     TRANSACTIONS {
         int id PK
         int portfolio_id FK
-        int security_id FK nullable
-        datetime date
-        enum type
+        int security_id FK
+        date date
+        string type
         string description
         int quantity
         decimal price
@@ -214,16 +214,33 @@ erDiagram
     }
 
     PRICE_HISTORY {
-        int security_id PK,FK
+        int security_id PK
+        string symbol
         date date PK
-        decimal close_price
+        decimal open
+        decimal high
+        decimal low
+        decimal close
+        decimal volume
     }
 
     FX_RATE_HISTORY {
         string base_currency_code PK
         string quote_currency_code PK
+        string symbol
         date date PK
-        decimal rate
+        decimal open
+        decimal high
+        decimal low
+        decimal close
+        decimal volume
+    }
+
+    IMPORT_ERROR_LOGS {
+        int id PK
+        string error_message
+        datetime timestamp
+        string pipeline_name
     }
 
     STRATEGIES {
@@ -233,8 +250,8 @@ erDiagram
     }
 
     ACCOUNT_STRATEGIES {
-        int account_id PK,FK
-        int strategy_id PK,FK
+        int account_id PK
+        int strategy_id PK
         decimal allocation_weight
     }
 
@@ -280,15 +297,16 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant UI as Market Data Tab
+    participant UI as Import / Export Tab
     participant Md as services.market_data
-    participant Yahoo as Yahoo Finance
+    participant Delta as Delta Tables
     participant DB as SQLite
 
-    User->>UI: Update Market Data
-    UI->>Md: update_market_data(start, end)
-    Md->>Yahoo: Download missing close history
+    User->>UI: Import Market Data — Merge
+    UI->>Md: import_market_data_from_delta(paths)
+    Md->>Delta: Read price and FX OHLCV rows
     Md->>DB: Upsert PriceHistory/FxRateHistory
+    Md->>DB: Insert failures into ImportErrorLog
     Md-->>UI: Ingestion summary
 ```
 

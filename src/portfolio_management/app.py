@@ -6,6 +6,9 @@ This module wires cross-tab callbacks and launches the app.
 """
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 import gradio as gr
 
 from portfolio_management.config import load_settings
@@ -14,12 +17,12 @@ from portfolio_management.tabs.accounts import build_accounts_tab, create_accoun
 from portfolio_management.tabs.brokers import build_brokers_tab
 from portfolio_management.tabs.dashboard import build_dashboard_tab, refresh_dashboard
 from portfolio_management.tabs.data_entry import build_data_entry_tab
-from portfolio_management.tabs.market_data import build_market_data_tab
 from portfolio_management.tabs.performance import build_performance_tab, _refresh_performance
 from portfolio_management.tabs.portfolios import build_portfolios_tab, create_portfolio_callback
 from portfolio_management.tabs.rebalance import build_rebalance_tab
 from portfolio_management.tabs.settings import build_settings_tab
 from portfolio_management.tabs.securities import build_securities_tab
+from portfolio_management.tabs.export import build_export_tab
 from portfolio_management.tabs.tax import build_tax_tab, _refresh_tax_report
 from portfolio_management.services.accounts import (
     default_account_choice,
@@ -49,18 +52,17 @@ body .gradio-container .wrap {
 }
 """
 
-APP_FAVICON_DATA_URI = (
-    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
-    "%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E"
-    "%3Cstop offset='0%25' stop-color='%2306b6d4'/%3E"
-    "%3Cstop offset='100%25' stop-color='%232563eb'/%3E"
-    "%3C/linearGradient%3E%3C/defs%3E"
-    "%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E"
-    "%3Ccircle cx='32' cy='32' r='24' fill='url(%23g)'/%3E"
-    "%3Cpath d='M20 20h18a8 8 0 1 1 0 16H28v8h-8V20zm8 8h10a2 2 0 1 0 0-4H28v4z' fill='white'/%3E"
-    "%3Cpath d='M39 44V20h6v24h-6z' fill='white'/%3E"
-    "%3C/svg%3E"
-)
+APP_FAVICON_PATH = Path(__file__).resolve().parent / "assets" / "Icon_Portfolio_Tracker.png"
+
+
+def _build_icon_data_uri(icon_path: Path) -> str | None:
+    if not icon_path.exists():
+        return None
+    encoded = base64.b64encode(icon_path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+APP_TITLE_ICON_DATA_URI = _build_icon_data_uri(APP_FAVICON_PATH)
 
 
 def _build_theme(theme_name: str) -> gr.themes.Base:
@@ -73,8 +75,12 @@ def _build_theme(theme_name: str) -> gr.themes.Base:
     )
 
 
-def _mode_changed(account_mode: str, tax_year: str) -> tuple[object, ...]:
-    dashboard_values = refresh_dashboard(account_mode)
+def _mode_changed(
+    account_mode: str,
+    reporting_currency: str,
+    tax_year: str,
+) -> tuple[object, ...]:
+    dashboard_values = refresh_dashboard(account_mode, reporting_currency)
     return (
         *dashboard_values,
         _refresh_performance(account_mode),
@@ -106,20 +112,27 @@ def build_app() -> gr.Blocks:
                 "document.documentElement.classList.remove(...classes);"
                 "document.documentElement.classList.add('theme-' + selected);"
                 "localStorage.setItem(key, selected);"
-                f"const iconHref='{APP_FAVICON_DATA_URI}';"
-                "let icon=document.querySelector(\"link[rel='icon']\");"
-                "if(!icon){icon=document.createElement('link');icon.rel='icon';document.head.appendChild(icon);}"
-                "icon.type='image/svg+xml';"
-                "icon.href=iconHref;"
                 "})();</script>"
             )
         )
-        gr.Markdown("# Portfolio Tracker")
+        if APP_TITLE_ICON_DATA_URI:
+            gr.HTML(
+                (
+                    "<div style='display:flex;align-items:center;gap:10px;margin:0 0 8px 0;'>"
+                    f"<img src='{APP_TITLE_ICON_DATA_URI}' alt='Portfolio Tracker icon' "
+                    "style='width:28px;height:28px;border-radius:6px;' />"
+                    "<h1 style='margin:0;'>Portfolio Tracker</h1>"
+                    "</div>"
+                )
+            )
+        else:
+            gr.Markdown("# Portfolio Tracker")
 
         # ── Build each tab ────────────────────────────────────────────────
         # mode_toggle lives inside the Dashboard tab so it doesn't clutter other tabs
         dashboard = build_dashboard_tab()
         mode_toggle = dashboard["mode_toggle"]
+        reporting_currency = dashboard["reporting_currency"]
         mode_banner_html = dashboard["mode_banner_html"]
 
         build_rebalance_tab(mode_toggle)
@@ -130,15 +143,28 @@ def build_app() -> gr.Blocks:
                 portfolios = build_portfolios_tab(selected_account)
                 build_securities_tab()
         data_entry = build_data_entry_tab(selected_account, selected_portfolio)
-        build_market_data_tab()
         performance = build_performance_tab(mode_toggle)
         tax = build_tax_tab(mode_toggle)
-        build_settings_tab()
+        import_export = build_export_tab()
+        settings_tab = build_settings_tab()
+
+        # Keep the Import / Export paths in sync when they are saved in Settings.
+        settings_tab["save_market_data_paths_button"].click(
+            fn=lambda prices_path, fx_path: (prices_path.strip(), fx_path.strip()),
+            inputs=[
+                settings_tab["market_prices_delta_path"],
+                settings_tab["fx_rates_delta_path"],
+            ],
+            outputs=[
+                import_export["prices_path"],
+                import_export["fx_path"],
+            ],
+        )
 
         # ── Cross-tab: Dashboard refresh (needs top-level mode_banner_html) ──
         dashboard["refresh_dashboard_button"].click(
             fn=refresh_dashboard,
-            inputs=[mode_toggle],
+            inputs=[mode_toggle, reporting_currency],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],
@@ -193,7 +219,7 @@ def build_app() -> gr.Blocks:
         # ── Cross-tab: Mode toggle (dashboard + performance + tax) ────────
         mode_toggle.change(
             fn=_mode_changed,
-            inputs=[mode_toggle, tax["tax_year"]],
+            inputs=[mode_toggle, reporting_currency, tax["tax_year"]],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],
@@ -204,13 +230,28 @@ def build_app() -> gr.Blocks:
                 tax["tax_report"],
             ],
         )
+        reporting_currency.change(
+            fn=refresh_dashboard,
+            inputs=[mode_toggle, reporting_currency],
+            outputs=[
+                mode_banner_html,
+                dashboard["summary_table"],
+                dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
+            ],
+        )
 
     return app
 
 
 def main() -> None:
     initialize_database()
-    build_app().launch()
+    launch_kwargs: dict[str, str] = {}
+    if APP_FAVICON_PATH.exists():
+        launch_kwargs["favicon_path"] = str(APP_FAVICON_PATH)
+    build_app().launch(**launch_kwargs)
+
 
 
 if __name__ == "__main__":

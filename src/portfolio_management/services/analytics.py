@@ -37,7 +37,11 @@ class Lot:
 def current_positions(
     include_simulated: bool = False,
     account_mode: str = LIVE_MODE,
+    reporting_currency: str | None = None,
+    as_of_date: date | None = None,
 ) -> pd.DataFrame:
+    reporting_currency = reporting_currency.upper() if reporting_currency else None
+    as_of_date = as_of_date or date.today()
     session_factory = get_session_factory()
     with session_factory() as session:
         rows = _load_transaction_rows(
@@ -45,7 +49,12 @@ def current_positions(
             include_simulated=include_simulated,
             account_mode=account_mode,
         )
-        records = _calculate_position_records(session, rows)
+        records = _calculate_position_records(
+            session,
+            rows,
+            reporting_currency=reporting_currency,
+            as_of_date=as_of_date,
+        )
     return pd.DataFrame(
         records,
         columns=[
@@ -57,6 +66,7 @@ def current_positions(
             "Name",
             "Asset Class",
             "Currency",
+            "Reporting Currency",
             "Quantity",
             "Average Cost",
             "Latest Price",
@@ -220,10 +230,14 @@ def twr_curve(
 def dashboard_summary(
     include_simulated: bool = False,
     account_mode: str = LIVE_MODE,
+    reporting_currency: str | None = None,
+    as_of_date: date | None = None,
 ) -> pd.DataFrame:
     positions = current_positions(
         include_simulated=include_simulated,
         account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        as_of_date=as_of_date,
     )
     if positions.empty:
         total_market_value = Decimal("0")
@@ -234,15 +248,37 @@ def dashboard_summary(
 
     return pd.DataFrame(
         [
-            {"Metric": "Market Value", "Value": str(total_market_value)},
-            {"Metric": "Unrealized P&L", "Value": str(total_unrealized)},
+            {
+                "Metric": (
+                    f"Global Market Value ({reporting_currency})"
+                    if reporting_currency
+                    else "Market Value"
+                ),
+                "Value": str(total_market_value),
+            },
+            {
+                "Metric": (
+                    f"Unrealized P&L ({reporting_currency})"
+                    if reporting_currency
+                    else "Unrealized P&L"
+                ),
+                "Value": str(total_unrealized),
+            },
         ],
         columns=["Metric", "Value"],
     )
 
 
-def allocation_by_asset_class(account_mode: str = LIVE_MODE) -> pd.DataFrame:
-    positions = current_positions(account_mode=account_mode)
+def allocation_by_asset_class(
+    account_mode: str = LIVE_MODE,
+    reporting_currency: str | None = None,
+    as_of_date: date | None = None,
+) -> pd.DataFrame:
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        as_of_date=as_of_date,
+    )
     if positions.empty:
         return pd.DataFrame(columns=["Asset Class", "Market Value"])
     rows = []
@@ -261,8 +297,16 @@ def allocation_by_asset_class(account_mode: str = LIVE_MODE) -> pd.DataFrame:
     )
 
 
-def allocation_by_currency(account_mode: str = LIVE_MODE) -> pd.DataFrame:
-    positions = current_positions(account_mode=account_mode)
+def allocation_by_currency(
+    account_mode: str = LIVE_MODE,
+    reporting_currency: str | None = None,
+    as_of_date: date | None = None,
+) -> pd.DataFrame:
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        as_of_date=as_of_date,
+    )
     if positions.empty:
         return pd.DataFrame(columns=["Currency", "Market Value"])
     rows = [
@@ -306,7 +350,10 @@ def _load_transaction_rows(
 def _calculate_position_records(
     session: Session,
     rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+    reporting_currency: str | None = None,
+    as_of_date: date | None = None,
 ) -> list[dict[str, str]]:
+    as_of_date = as_of_date or date.today()
     security_state: dict[tuple[int, int], dict[str, object]] = {}
     cash_state: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
 
@@ -348,11 +395,41 @@ def _calculate_position_records(
         if not isinstance(portfolio, Portfolio) or not isinstance(security, Security):
             continue
 
-        latest_price = _latest_price(session, security)
+        latest_price = _latest_price(session, security, as_of_date=as_of_date)
         average_cost = cost_basis / quantity if quantity else Decimal("0")
         # When no price history exists, use cost basis as best-effort market value
         market_value = quantity * latest_price if latest_price is not None else cost_basis
         unrealized = market_value - cost_basis
+        if reporting_currency:
+            average_cost = _convert_currency(
+                session,
+                average_cost,
+                security.currency_code,
+                reporting_currency,
+                as_of_date,
+            )
+            if latest_price is not None:
+                latest_price = _convert_currency(
+                    session,
+                    latest_price,
+                    security.currency_code,
+                    reporting_currency,
+                    as_of_date,
+                )
+            market_value = _convert_currency(
+                session,
+                market_value,
+                security.currency_code,
+                reporting_currency,
+                as_of_date,
+            )
+            unrealized = _convert_currency(
+                session,
+                unrealized,
+                security.currency_code,
+                reporting_currency,
+                as_of_date,
+            )
 
         records.append(
             {
@@ -364,6 +441,7 @@ def _calculate_position_records(
                 "Name": security.name,
                 "Asset Class": security.asset_class.value,
                 "Currency": security.currency_code,
+                "Reporting Currency": reporting_currency or security.currency_code,
                 "Quantity": str(quantity),
                 "Average Cost": str(average_cost),
                 "Latest Price": str(latest_price) if latest_price is not None else "",
@@ -379,6 +457,28 @@ def _calculate_position_records(
         if portfolio_row is None:
             continue
         _, portfolio, account, broker, _ = portfolio_row
+        converted_balance = (
+            _convert_currency(
+                session,
+                balance,
+                currency_code,
+                reporting_currency,
+                as_of_date,
+            )
+            if reporting_currency
+            else balance
+        )
+        unit_value = (
+            _convert_currency(
+                session,
+                Decimal("1"),
+                currency_code,
+                reporting_currency,
+                as_of_date,
+            )
+            if reporting_currency
+            else Decimal("1")
+        )
         records.append(
             {
                 "Broker": broker.name,
@@ -389,10 +489,11 @@ def _calculate_position_records(
                 "Name": f"{currency_code} Cash",
                 "Asset Class": "CASH",
                 "Currency": currency_code,
+                "Reporting Currency": reporting_currency or currency_code,
                 "Quantity": str(balance),
-                "Average Cost": "1",
-                "Latest Price": "1",
-                "Market Value": str(balance),
+                "Average Cost": str(unit_value),
+                "Latest Price": str(unit_value),
+                "Market Value": str(converted_balance),
                 "Unrealized P&L": "0",
             }
         )
@@ -622,22 +723,55 @@ def _convert_to_account_currency(
     account_currency: str,
     as_of_date: date,
 ) -> Decimal:
-    if security_currency == account_currency:
+    return _convert_currency(
+        session,
+        value,
+        security_currency,
+        account_currency,
+        as_of_date,
+    )
+
+
+def _convert_currency(
+    session: Session,
+    value: Decimal,
+    source_currency: str,
+    target_currency: str,
+    as_of_date: date,
+) -> Decimal:
+    source = source_currency.upper()
+    target = target_currency.upper()
+    if source == target:
         return value
 
+    direct_rate = _latest_fx_rate(session, source, target, as_of_date)
+    if direct_rate is not None:
+        return value * direct_rate
+
+    inverse_rate = _latest_fx_rate(session, target, source, as_of_date)
+    if inverse_rate is not None and inverse_rate != 0:
+        return value / inverse_rate
+
+    return value
+
+
+def _latest_fx_rate(
+    session: Session,
+    base_currency: str,
+    quote_currency: str,
+    as_of_date: date,
+) -> Decimal | None:
     rate = session.scalar(
         select(FxRateHistory)
         .where(
-            FxRateHistory.base_currency_code == security_currency,
-            FxRateHistory.quote_currency_code == account_currency,
+            FxRateHistory.base_currency_code == base_currency,
+            FxRateHistory.quote_currency_code == quote_currency,
             FxRateHistory.date <= as_of_date,
         )
         .order_by(FxRateHistory.date.desc())
         .limit(1)
     )
-    if rate is None:
-        return value
-    return value * rate.rate
+    return rate.close if rate else None
 
 
 def _decimal_or_zero(value: object) -> Decimal:

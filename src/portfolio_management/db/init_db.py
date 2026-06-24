@@ -50,9 +50,9 @@ def migrate_sqlite_schema(engine: object) -> None:
             row[1]
             for row in connection.execute(text("PRAGMA table_info(brokers)")).fetchall()
         }
-        if "description" not in broker_columns:
+        if broker_columns and "description" not in broker_columns:
             connection.execute(text("ALTER TABLE brokers ADD COLUMN description VARCHAR(1000)"))
-        if "is_active" not in broker_columns:
+        if broker_columns and "is_active" not in broker_columns:
             connection.execute(
                 text("ALTER TABLE brokers ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
             )
@@ -61,15 +61,15 @@ def migrate_sqlite_schema(engine: object) -> None:
             row[1]
             for row in connection.execute(text("PRAGMA table_info(accounts)")).fetchall()
         }
-        if "description" not in account_columns:
+        if account_columns and "description" not in account_columns:
             connection.execute(text("ALTER TABLE accounts ADD COLUMN description VARCHAR(1000)"))
-        if "tax_wrapper_type" not in account_columns:
+        if account_columns and "tax_wrapper_type" not in account_columns:
             connection.execute(text("ALTER TABLE accounts ADD COLUMN tax_wrapper_type VARCHAR(64)"))
-        if "is_simulated" not in account_columns:
+        if account_columns and "is_simulated" not in account_columns:
             connection.execute(
                 text("ALTER TABLE accounts ADD COLUMN is_simulated BOOLEAN NOT NULL DEFAULT 0")
             )
-        if "is_active" not in account_columns:
+        if account_columns and "is_active" not in account_columns:
             connection.execute(
                 text("ALTER TABLE accounts ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
             )
@@ -78,11 +78,11 @@ def migrate_sqlite_schema(engine: object) -> None:
             row[1]
             for row in connection.execute(text("PRAGMA table_info(portfolios)")).fetchall()
         }
-        if "description" not in portfolio_columns:
+        if portfolio_columns and "description" not in portfolio_columns:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN description VARCHAR(1000)"))
-        if "portfolio_url" not in portfolio_columns:
+        if portfolio_columns and "portfolio_url" not in portfolio_columns:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN portfolio_url VARCHAR(2000)"))
-        if "is_active" not in portfolio_columns:
+        if portfolio_columns and "is_active" not in portfolio_columns:
             connection.execute(
                 text("ALTER TABLE portfolios ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
             )
@@ -91,7 +91,7 @@ def migrate_sqlite_schema(engine: object) -> None:
             row[1]
             for row in connection.execute(text("PRAGMA table_info(securities)"))
         }
-        if "description" not in security_columns:
+        if security_columns and "description" not in security_columns:
             connection.execute(text("ALTER TABLE securities ADD COLUMN description VARCHAR(1000)"))
 
         reference_tables = {
@@ -349,21 +349,40 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
 
 
 def _migrate_price_history_decimal(connection: object) -> None:
-    """Migrate price_history.close_price from VARCHAR to DECIMAL."""
-    column_type = _get_column_type(connection, "price_history", "close_price")
-    if column_type and "DECIMAL" not in column_type:
+    """Upgrade price history to the symbol/date/OHLCV schema."""
+    columns = _get_columns(connection, "price_history")
+    if not columns:
+        return
+    required = {"security_id", "symbol", "date", "open", "high", "low", "close", "volume"}
+    close_column = "close" if "close" in columns else "close_price"
+    needs_upgrade = (
+        not required.issubset(columns)
+        or close_column == "close_price"
+        or not _is_decimal_column(columns.get("close", ""))
+    )
+    if needs_upgrade:
+        selected = ["security_id", "date", close_column]
+        selected.extend(
+            column for column in ("symbol", "open", "high", "low", "volume") if column in columns
+        )
         raw_rows = connection.execute(
-            text("SELECT security_id, date, close_price FROM price_history")
+            text(f"SELECT {', '.join(selected)} FROM price_history")
         ).mappings().all()
 
         connection.execute(text("PRAGMA foreign_keys=OFF"))
+        connection.execute(text("DROP TABLE IF EXISTS price_history_new"))
         connection.execute(
             text(
                 """
-                CREATE TABLE IF NOT EXISTS price_history_new (
+                CREATE TABLE price_history_new (
                     security_id INTEGER NOT NULL,
+                    symbol VARCHAR(32),
                     date DATE NOT NULL,
-                    close_price DECIMAL(32, 10) NOT NULL,
+                    open NUMERIC(32, 10),
+                    high NUMERIC(32, 10),
+                    low NUMERIC(32, 10),
+                    close NUMERIC(32, 10) NOT NULL,
+                    volume NUMERIC(32, 10),
                     PRIMARY KEY (security_id, date),
                     FOREIGN KEY(security_id) REFERENCES securities (id)
                 )
@@ -371,17 +390,32 @@ def _migrate_price_history_decimal(connection: object) -> None:
             )
         )
         for row in raw_rows:
+            close_value = str(Decimal(str(row[close_column])))
+            symbol = row.get("symbol")
+            if not symbol:
+                symbol = connection.execute(
+                    text("SELECT ticker FROM securities WHERE id = :security_id"),
+                    {"security_id": row["security_id"]},
+                ).scalar_one_or_none()
             connection.execute(
                 text(
                     """
-                    INSERT INTO price_history_new (security_id, date, close_price)
-                    VALUES (:security_id, :date, :close_price)
+                    INSERT INTO price_history_new (
+                        security_id, symbol, date, open, high, low, close, volume
+                    ) VALUES (
+                        :security_id, :symbol, :date, :open, :high, :low, :close, :volume
+                    )
                     """
                 ),
                 {
                     "security_id": row["security_id"],
+                    "symbol": symbol,
                     "date": row["date"],
-                    "close_price": str(Decimal(str(row["close_price"]))),
+                    "open": _decimal_or_default(row.get("open"), close_value),
+                    "high": _decimal_or_default(row.get("high"), close_value),
+                    "low": _decimal_or_default(row.get("low"), close_value),
+                    "close": close_value,
+                    "volume": _decimal_or_none(row.get("volume")),
                 },
             )
         connection.execute(text("DROP TABLE price_history"))
@@ -390,42 +424,83 @@ def _migrate_price_history_decimal(connection: object) -> None:
 
 
 def _migrate_fx_rate_history_decimal(connection: object) -> None:
-    """Migrate fx_rate_history.rate from VARCHAR to DECIMAL."""
-    column_type = _get_column_type(connection, "fx_rate_history", "rate")
-    if column_type and "DECIMAL" not in column_type:
+    """Upgrade FX history to the symbol/date/OHLCV schema."""
+    columns = _get_columns(connection, "fx_rate_history")
+    if not columns:
+        return
+    required = {
+        "base_currency_code",
+        "quote_currency_code",
+        "symbol",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
+    close_column = "close" if "close" in columns else "rate"
+    needs_upgrade = (
+        not required.issubset(columns)
+        or close_column == "rate"
+        or not _is_decimal_column(columns.get("close", ""))
+    )
+    if needs_upgrade:
+        selected = ["base_currency_code", "quote_currency_code", "date", close_column]
+        selected.extend(
+            column for column in ("symbol", "open", "high", "low", "volume") if column in columns
+        )
         raw_rows = connection.execute(
-            text(
-                "SELECT base_currency_code, quote_currency_code, date, rate FROM fx_rate_history"
-            )
+            text(f"SELECT {', '.join(selected)} FROM fx_rate_history")
         ).mappings().all()
 
         connection.execute(text("PRAGMA foreign_keys=OFF"))
+        connection.execute(text("DROP TABLE IF EXISTS fx_rate_history_new"))
         connection.execute(
             text(
                 """
-                CREATE TABLE IF NOT EXISTS fx_rate_history_new (
+                CREATE TABLE fx_rate_history_new (
                     base_currency_code VARCHAR(3) NOT NULL,
                     quote_currency_code VARCHAR(3) NOT NULL,
+                    symbol VARCHAR(32),
                     date DATE NOT NULL,
-                    rate DECIMAL(32, 10) NOT NULL,
+                    open NUMERIC(32, 10),
+                    high NUMERIC(32, 10),
+                    low NUMERIC(32, 10),
+                    close NUMERIC(32, 10) NOT NULL,
+                    volume NUMERIC(32, 10),
                     PRIMARY KEY (base_currency_code, quote_currency_code, date)
                 )
                 """
             )
         )
         for row in raw_rows:
+            close_value = str(Decimal(str(row[close_column])))
+            symbol = row.get("symbol") or (
+                f"{row['base_currency_code']}{row['quote_currency_code']}=X"
+            )
             connection.execute(
                 text(
                     """
-                    INSERT INTO fx_rate_history_new (base_currency_code, quote_currency_code, date, rate)
-                    VALUES (:base_currency_code, :quote_currency_code, :date, :rate)
+                    INSERT INTO fx_rate_history_new (
+                        base_currency_code, quote_currency_code, symbol, date,
+                        open, high, low, close, volume
+                    ) VALUES (
+                        :base_currency_code, :quote_currency_code, :symbol, :date,
+                        :open, :high, :low, :close, :volume
+                    )
                     """
                 ),
                 {
                     "base_currency_code": row["base_currency_code"],
                     "quote_currency_code": row["quote_currency_code"],
+                    "symbol": symbol,
                     "date": row["date"],
-                    "rate": str(Decimal(str(row["rate"]))),
+                    "open": _decimal_or_default(row.get("open"), close_value),
+                    "high": _decimal_or_default(row.get("high"), close_value),
+                    "low": _decimal_or_default(row.get("low"), close_value),
+                    "close": close_value,
+                    "volume": _decimal_or_none(row.get("volume")),
                 },
             )
         connection.execute(text("DROP TABLE fx_rate_history"))
@@ -443,6 +518,32 @@ def _get_column_type(connection: object, table_name: str, column_name: str) -> s
         return None
     except Exception:
         return None
+
+
+def _get_columns(connection: object, table_name: str) -> dict[str, str]:
+    try:
+        return {
+            row[1]: (row[2] or "").upper()
+            for row in connection.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+        }
+    except Exception:
+        return {}
+
+
+def _is_decimal_column(column_type: str) -> bool:
+    return "DECIMAL" in column_type or "NUMERIC" in column_type
+
+
+def _decimal_or_default(value: object, default: str) -> str:
+    if value is None:
+        return default
+    return str(Decimal(str(value)))
+
+
+def _decimal_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(Decimal(str(value)))
 
 
 def main() -> None:

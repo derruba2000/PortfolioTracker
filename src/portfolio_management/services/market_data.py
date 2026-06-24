@@ -4,10 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
+from deltalake import DeltaTable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +23,7 @@ from portfolio_management.db.models import (
     Transaction,
 )
 from portfolio_management.db.session import get_session_factory
+from portfolio_management.services.import_errors import add_import_error, log_import_error
 
 
 DEFAULT_LOOKBACK_DAYS = 365
@@ -40,6 +43,21 @@ class MarketDataResult:
         return (
             f"Stored {self.prices_inserted} price row(s) and "
             f"{self.fx_rates_inserted} FX row(s).{skipped}"
+        )
+
+
+@dataclass(frozen=True)
+class DeltaImportResult:
+    prices_upserted: int = 0
+    fx_rates_upserted: int = 0
+    skipped: tuple[str, ...] = ()
+
+    @property
+    def message(self) -> str:
+        skipped = f" Skipped: {', '.join(self.skipped)}." if self.skipped else ""
+        return (
+            f"Imported {self.prices_upserted} price row(s) and "
+            f"{self.fx_rates_upserted} FX row(s).{skipped}"
         )
 
 
@@ -128,17 +146,17 @@ def store_security_prices(
     history: pd.DataFrame,
 ) -> int:
     inserted = 0
-    for price_date, close_price in _iter_close_prices(history):
+    for row in _iter_ohlcv_rows(history):
         existing = session.get(
             PriceHistory,
-            {"security_id": security.id, "date": price_date},
+            {"security_id": security.id, "date": row["date"]},
         )
         if existing is None:
             session.add(
                 PriceHistory(
                     security_id=security.id,
-                    date=price_date,
-                    close_price=close_price,
+                    symbol=security.ticker,
+                    **row,
                 )
             )
             inserted += 1
@@ -155,13 +173,14 @@ def store_fx_rates(
     base_currency = base_currency.upper()
     quote_currency = quote_currency.upper()
 
-    for rate_date, rate in _iter_close_prices(history):
+    symbol = yahoo_fx_symbol(base_currency, quote_currency)
+    for row in _iter_ohlcv_rows(history):
         existing = session.get(
             FxRateHistory,
             {
                 "base_currency_code": base_currency,
                 "quote_currency_code": quote_currency,
-                "date": rate_date,
+                "date": row["date"],
             },
         )
         if existing is None:
@@ -169,8 +188,8 @@ def store_fx_rates(
                 FxRateHistory(
                     base_currency_code=base_currency,
                     quote_currency_code=quote_currency,
-                    date=rate_date,
-                    rate=rate,
+                    symbol=symbol,
+                    **row,
                 )
             )
             inserted += 1
@@ -206,6 +225,141 @@ def list_required_fx_pairs(session: Session) -> list[tuple[str, str]]:
 
 def yahoo_fx_symbol(base_currency: str, quote_currency: str) -> str:
     return f"{base_currency.upper()}{quote_currency.upper()}=X"
+
+
+def import_market_data_from_delta(
+    market_prices_path: str | Path | None,
+    fx_rates_path: str | Path | None,
+) -> DeltaImportResult:
+    session_factory = get_session_factory()
+    try:
+        with session_factory() as session:
+            result = import_market_data_from_delta_for_session(
+                session,
+                market_prices_path=market_prices_path,
+                fx_rates_path=fx_rates_path,
+            )
+            session.commit()
+        return result
+    except Exception as exc:
+        log_import_error(
+            pipeline_name="delta_market_data",
+            error_message=str(exc),
+        )
+        raise
+
+
+def import_market_data_from_delta_for_session(
+    session: Session,
+    market_prices_path: str | Path | None,
+    fx_rates_path: str | Path | None,
+) -> DeltaImportResult:
+    prices_upserted = 0
+    fx_rates_upserted = 0
+    skipped: list[str] = []
+
+    if market_prices_path:
+        prices = _read_delta_ohlcv(market_prices_path)
+        securities = {
+            security.ticker.upper(): security for security in session.scalars(select(Security)).all()
+        }
+        for row in prices:
+            symbol = row.pop("symbol")
+            security = securities.get(symbol.upper())
+            if security is None:
+                message = f"unknown price symbol {symbol}"
+                skipped.append(message)
+                add_import_error(
+                    session,
+                    pipeline_name="delta_market_prices",
+                    error_message=message,
+                )
+                continue
+            existing = session.get(
+                PriceHistory,
+                {"security_id": security.id, "date": row["date"]},
+            )
+            if existing is None:
+                session.add(
+                    PriceHistory(
+                        security_id=security.id,
+                        symbol=security.ticker,
+                        **row,
+                    )
+                )
+            else:
+                _apply_ohlcv(existing, security.ticker, row)
+            prices_upserted += 1
+
+    if fx_rates_path:
+        fx_rates = _read_delta_ohlcv(fx_rates_path)
+        for row in fx_rates:
+            symbol = row.pop("symbol")
+            try:
+                base_currency, quote_currency = parse_fx_symbol(symbol)
+            except ValueError as exc:
+                message = str(exc)
+                skipped.append(message)
+                add_import_error(
+                    session,
+                    pipeline_name="delta_fx_rates",
+                    error_message=message,
+                )
+                continue
+            existing = session.get(
+                FxRateHistory,
+                {
+                    "base_currency_code": base_currency,
+                    "quote_currency_code": quote_currency,
+                    "date": row["date"],
+                },
+            )
+            if existing is None:
+                session.add(
+                    FxRateHistory(
+                        base_currency_code=base_currency,
+                        quote_currency_code=quote_currency,
+                        symbol=symbol,
+                        **row,
+                    )
+                )
+            else:
+                _apply_ohlcv(existing, symbol, row)
+            fx_rates_upserted += 1
+
+    if not market_prices_path:
+        message = "market prices Delta path is not set"
+        skipped.append(message)
+        add_import_error(
+            session,
+            pipeline_name="delta_market_prices",
+            error_message=message,
+        )
+    if not fx_rates_path:
+        message = "FX rates Delta path is not set"
+        skipped.append(message)
+        add_import_error(
+            session,
+            pipeline_name="delta_fx_rates",
+            error_message=message,
+        )
+
+    session.flush()
+    return DeltaImportResult(
+        prices_upserted=prices_upserted,
+        fx_rates_upserted=fx_rates_upserted,
+        skipped=tuple(skipped),
+    )
+
+
+def parse_fx_symbol(symbol: str) -> tuple[str, str]:
+    normalized = symbol.strip().upper()
+    if normalized.endswith("=X"):
+        normalized = normalized[:-2]
+    normalized = normalized.replace("/", "").replace("-", "").replace("_", "")
+    if len(normalized) != 6 or not normalized.isalpha():
+        raise ValueError(f"invalid FX symbol {symbol!r}")
+    return normalized[:3], normalized[3:]
 
 
 def market_data_summary() -> pd.DataFrame:
@@ -293,19 +447,96 @@ def _next_fx_rate_date(
 
 
 def _iter_close_prices(history: pd.DataFrame) -> list[tuple[date, Decimal]]:
+    return [(row["date"], row["close"]) for row in _iter_ohlcv_rows(history)]
+
+
+def _iter_ohlcv_rows(history: pd.DataFrame) -> list[dict[str, Any]]:
     if history.empty:
         return []
 
-    close_values = _close_series(history).dropna()
-    prices: list[tuple[date, Decimal]] = []
-    for index, value in close_values.items():
+    close_values = _history_series(history, "Close")
+    rows: list[dict[str, Any]] = []
+    for index, close_value in close_values.dropna().items():
         price_date = pd.Timestamp(index).date()
-        prices.append((price_date, Decimal(str(value))))
-    return prices
+        rows.append(
+            {
+                "date": price_date,
+                "open": _decimal_at(history, "Open", index),
+                "high": _decimal_at(history, "High", index),
+                "low": _decimal_at(history, "Low", index),
+                "close": Decimal(str(close_value)),
+                "volume": _decimal_at(history, "Volume", index),
+            }
+        )
+    return rows
 
 
 def _close_series(history: pd.DataFrame) -> pd.Series:
-    close_column: Any = history["Close"]
-    if isinstance(close_column, pd.DataFrame):
-        return close_column.iloc[:, 0]
-    return close_column
+    return _history_series(history, "Close")
+
+
+def _history_series(history: pd.DataFrame, column_name: str) -> pd.Series:
+    if column_name not in history.columns and not isinstance(history.columns, pd.MultiIndex):
+        return pd.Series(index=history.index, dtype="object")
+    try:
+        values: Any = history[column_name]
+    except KeyError:
+        return pd.Series(index=history.index, dtype="object")
+    if isinstance(values, pd.DataFrame):
+        return values.iloc[:, 0]
+    return values
+
+
+def _decimal_at(history: pd.DataFrame, column_name: str, index: Any) -> Decimal | None:
+    series = _history_series(history, column_name)
+    if series.empty:
+        return None
+    value = series.loc[index]
+    if isinstance(value, pd.Series):
+        value = value.iloc[0]
+    if pd.isna(value):
+        return None
+    return Decimal(str(value))
+
+
+def _read_delta_ohlcv(path: str | Path) -> list[dict[str, Any]]:
+    frame = DeltaTable(str(path)).to_pandas()
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
+    required = {"symbol", "date", "open", "high", "low", "close", "volume"}
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise ValueError(
+            f"Delta table {path} is missing required column(s): {', '.join(missing)}"
+        )
+
+    rows: list[dict[str, Any]] = []
+    for record in frame[list(required)].to_dict(orient="records"):
+        if pd.isna(record["symbol"]) or pd.isna(record["date"]) or pd.isna(record["close"]):
+            raise ValueError(f"Delta table {path} contains a row without symbol, date, or close")
+        rows.append(
+            {
+                "symbol": str(record["symbol"]).strip(),
+                "date": pd.Timestamp(record["date"]).date(),
+                "open": _optional_decimal(record["open"]),
+                "high": _optional_decimal(record["high"]),
+                "low": _optional_decimal(record["low"]),
+                "close": Decimal(str(record["close"])),
+                "volume": _optional_decimal(record["volume"]),
+            }
+        )
+    return rows
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    if pd.isna(value):
+        return None
+    return Decimal(str(value))
+
+
+def _apply_ohlcv(target: PriceHistory | FxRateHistory, symbol: str, row: dict[str, Any]) -> None:
+    target.symbol = symbol
+    target.open = row["open"]
+    target.high = row["high"]
+    target.low = row["low"]
+    target.close = row["close"]
+    target.volume = row["volume"]

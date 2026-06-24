@@ -41,9 +41,9 @@ Top-level tabs:
 - Rebalance
 - Master Data
 - Transactions Entry
-- Market Data
 - Performance
 - Tax
+- Import / Export
 - Settings
 
 Nested tabs:
@@ -52,6 +52,10 @@ Nested tabs:
 - Transactions Entry: Transactions, Cash Transfer
 
 ## Main Workflows
+
+The Dashboard reporting-currency filter converts all position values, totals, and
+allocation charts to GBP, EUR, or USD using the latest available FX close on or
+before today.
 
 ### 1) Master Data
 
@@ -69,14 +73,15 @@ Nested tabs:
 
 CSV aliases supported include `Symbol -> Ticker`, `Shares -> Quantity`, `Fee -> Fees`, `Amount -> Total Value`, and `Notes/Memo -> Description`.
 
-### 3) Market Data
+### 3) Market Data Import
 
-Use `Market Data` to fetch missing daily closes and FX rates from Yahoo Finance:
+Use `Import / Export > Import Market Data` to merge prices and FX rates from the
+Delta table paths configured in Settings:
 
-- Security closes are stored in `price_history`.
-- FX rates are stored in `fx_rate_history`.
-- FX symbols use Yahoo format such as `EURGBP=X`.
-- Date range is optional; default lookback is 365 days.
+- Price rows are stored in `price_history`.
+- FX rows are stored in `fx_rate_history`.
+- Existing symbol/date rows are updated and new rows are inserted.
+- Import failures are stored in `import_error_logs`.
 
 ### 4) Analytics, Rebalance, Tax
 

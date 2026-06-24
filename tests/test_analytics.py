@@ -11,6 +11,7 @@ from portfolio_management.db.models import (
     Account,
     AssetClass,
     Broker,
+    FxRateHistory,
     Portfolio,
     PriceHistory,
     Security,
@@ -184,3 +185,147 @@ def test_twr_curve_links_daily_returns(monkeypatch) -> None:
 
     assert first_two_days.iloc[0]["TWR"] == "0"
     assert first_two_days.iloc[1]["TWR"] == "0.1"
+
+
+def test_dashboard_reporting_currency_converts_prices_costs_values_and_charts(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="EUR Account", currency_code="EUR")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="VWCE.AS",
+            name="Global ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="EUR",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=10,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("1000"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 2),
+                    close_price=Decimal("120"),
+                ),
+                FxRateHistory(
+                    base_currency_code="EUR",
+                    quote_currency_code="GBP",
+                    symbol="EURGBP=X",
+                    date=date(2026, 1, 2),
+                    close=Decimal("0.80"),
+                ),
+                FxRateHistory(
+                    base_currency_code="EUR",
+                    quote_currency_code="GBP",
+                    symbol="EURGBP=X",
+                    date=date(2026, 1, 4),
+                    close=Decimal("0.90"),
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    positions = current_positions(
+        reporting_currency="GBP",
+        as_of_date=date(2026, 1, 3),
+    )
+    summary = dashboard_summary(
+        reporting_currency="GBP",
+        as_of_date=date(2026, 1, 3),
+    )
+    asset_chart = allocation_by_asset_class(
+        reporting_currency="GBP",
+        as_of_date=date(2026, 1, 3),
+    )
+    currency_chart = allocation_by_currency(
+        reporting_currency="GBP",
+        as_of_date=date(2026, 1, 3),
+    )
+
+    assert positions.loc[0, "Currency"] == "EUR"
+    assert positions.loc[0, "Reporting Currency"] == "GBP"
+    assert Decimal(positions.loc[0, "Average Cost"]) == Decimal("80.00")
+    assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("96.00")
+    assert Decimal(positions.loc[0, "Market Value"]) == Decimal("960.00")
+    assert Decimal(positions.loc[0, "Unrealized P&L"]) == Decimal("160.00")
+    assert summary.loc[0, "Metric"] == "Global Market Value (GBP)"
+    assert Decimal(summary.loc[0, "Value"]) == Decimal("960.00")
+    assert asset_chart.loc[0, "Market Value"] == 960.0
+    assert currency_chart.loc[0, "Currency"] == "EUR"
+    assert currency_chart.loc[0, "Market Value"] == 960.0
+
+
+def test_dashboard_reporting_currency_uses_inverse_fx_pair(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="USD Account", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="AAPL",
+            name="Apple",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=1,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("100"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 2),
+                    close_price=Decimal("125"),
+                ),
+                FxRateHistory(
+                    base_currency_code="GBP",
+                    quote_currency_code="USD",
+                    symbol="GBPUSD=X",
+                    date=date(2026, 1, 2),
+                    close=Decimal("1.25"),
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    positions = current_positions(
+        reporting_currency="GBP",
+        as_of_date=date(2026, 1, 3),
+    )
+
+    assert Decimal(positions.loc[0, "Latest Price"]) == Decimal("100")
+    assert Decimal(positions.loc[0, "Market Value"]) == Decimal("100")
