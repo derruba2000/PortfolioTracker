@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from portfolio_management.db.models import AssetClass, Security
-from portfolio_management.db.session import get_session_factory
+from portfolio_management.db.session import get_engine, get_session_factory
 from portfolio_management.services.reference_data import ensure_currency_code, is_known_asset_class
+
+
+YAHOO_DETAIL_TABLES = {
+    "snapshot": "yahoo_security_snapshots",
+    "security_info": "yahoo_security_info",
+    "analyst_targets": "yahoo_analyst_targets",
+    "calendar_events": "yahoo_calendar_events",
+    "financial_facts": "yahoo_financial_facts",
+    "fund_profile": "yahoo_fund_profiles",
+    "fund_holdings": "yahoo_fund_holdings",
+    "fund_metrics": "yahoo_fund_metrics",
+    "fund_performance": "yahoo_fund_performance",
+    "fund_asset_allocation": "yahoo_fund_asset_allocation",
+    "fund_sector_weightings": "yahoo_fund_sector_weightings",
+    "option_contracts": "yahoo_option_contracts",
+}
 
 
 def create_security(
@@ -72,6 +88,103 @@ def list_security_tickers() -> list[str]:
     with session_factory() as session:
         tickers = session.scalars(select(Security.ticker).order_by(Security.ticker)).all()
     return list(tickers)
+
+
+def security_detail_symbols() -> list[str]:
+    symbols = set(list_security_tickers())
+    engine = get_engine()
+    existing_tables = set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        for table in YAHOO_DETAIL_TABLES.values():
+            if table not in existing_tables:
+                continue
+            rows = connection.execute(
+                text(f'SELECT DISTINCT symbol FROM "{table}" ORDER BY symbol')
+            ).scalars()
+            symbols.update(str(symbol).strip() for symbol in rows if str(symbol).strip())
+    return sorted(symbols)
+
+
+def yahoo_security_details(symbol: str | None) -> dict[str, pd.DataFrame]:
+    clean_symbol = (symbol or "").strip().upper()
+    details = {
+        key: _empty_yahoo_table(table)
+        for key, table in YAHOO_DETAIL_TABLES.items()
+    }
+    if not clean_symbol:
+        return details
+
+    engine = get_engine()
+    existing_tables = set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        for key, table in YAHOO_DETAIL_TABLES.items():
+            if table not in existing_tables:
+                continue
+            details[key] = pd.read_sql_query(
+                text(f'SELECT * FROM "{table}" WHERE symbol = :symbol'),
+                connection,
+                params={"symbol": clean_symbol},
+            )
+
+    details["snapshot"] = _vertical_record(
+        details["snapshot"],
+        excluded_columns={"symbol", "raw_info_json"},
+    )
+    details["fund_profile"] = _vertical_record(
+        details["fund_profile"],
+        excluded_columns={"symbol"},
+    )
+    for key, dataframe in details.items():
+        if key not in {"snapshot", "fund_profile"}:
+            details[key] = _display_dataframe(dataframe)
+    return details
+
+
+def _empty_yahoo_table(table: str) -> pd.DataFrame:
+    engine = get_engine()
+    inspector = inspect(engine)
+    if table not in inspector.get_table_names():
+        return pd.DataFrame()
+    columns = [column["name"] for column in inspector.get_columns(table)]
+    return pd.DataFrame(columns=columns)
+
+
+def _vertical_record(
+    dataframe: pd.DataFrame,
+    excluded_columns: set[str],
+) -> pd.DataFrame:
+    if dataframe.empty:
+        return pd.DataFrame(columns=["Attribute", "Value"])
+    row = dataframe.iloc[0]
+    return pd.DataFrame(
+        [
+            {
+                "Attribute": _display_column_name(column),
+                "Value": _display_value(row[column]),
+            }
+            for column in dataframe.columns
+            if column not in excluded_columns
+        ],
+        columns=["Attribute", "Value"],
+    )
+
+
+def _display_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    displayed = dataframe.drop(columns=["symbol"], errors="ignore").copy()
+    displayed.columns = [_display_column_name(column) for column in displayed.columns]
+    return displayed.map(_display_value)
+
+
+def _display_column_name(column: str) -> str:
+    return str(column).replace("_", " ").title()
+
+
+def _display_value(value: object) -> object:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float):
+        return f"{value:,.6g}"
+    return value
 
 
 def get_security_defaults(
