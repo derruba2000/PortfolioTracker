@@ -168,6 +168,107 @@ def test_portfolio_value_without_explicit_cash_uses_full_holding_value(
     assert list(values["Portfolio Value"]) == [100.0, 110.0]
 
 
+def test_performance_does_not_double_count_explicit_trade_settlement(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        broker = Broker(name="Hargreaves Lansdown")
+        account = Account(
+            broker=broker,
+            name="Stocks and Shares ISA",
+            currency_code="GBP",
+        )
+        portfolio = Portfolio(account=account, name="Default Portfolio")
+        holding_security = Security(
+            ticker="VWRP",
+            name="Vanguard Funds Plc (VWRP)",
+            asset_class=AssetClass.ETF,
+            currency_code="GBP",
+        )
+        priced_security = Security(
+            ticker="VWRP.L",
+            name="Vanguard FTSE All-World UCITS ETF",
+            asset_class=AssetClass.ETF,
+            currency_code="GBP",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    date=datetime(2026, 6, 22),
+                    type=TransactionType.DEPOSIT,
+                    description="Transfer from EDGE Account",
+                    quantity=0,
+                    price=Decimal("0"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("1000"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio,
+                    security=holding_security,
+                    date=datetime(2026, 6, 23),
+                    type=TransactionType.BUY,
+                    description="Vanguard Funds Plc (VWRP)",
+                    quantity=6,
+                    price=Decimal("141.22"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("847.32"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio,
+                    date=datetime(2026, 6, 23),
+                    type=TransactionType.WITHDRAWAL,
+                    description="Vanguard Funds Plc (VWRP)",
+                    quantity=1,
+                    price=Decimal("868.02"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("868.02"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=priced_security,
+                    symbol="VWRP.L",
+                    date=date(2026, 6, 23),
+                    close=Decimal("141.40"),
+                ),
+                PriceHistory(
+                    security=priced_security,
+                    symbol="VWRP.L",
+                    date=date(2026, 6, 24),
+                    close=Decimal("142.06"),
+                ),
+            ]
+        )
+        session.commit()
+        portfolio_id = portfolio.id
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    monkeypatch.setattr(
+        "portfolio_management.services.db_performance.get_session_factory",
+        lambda: factory,
+    )
+
+    values = portfolio_value_history(
+        reporting_currency="GBP",
+        end_date=date(2026, 6, 24),
+        portfolio_id=portfolio_id,
+    )
+    flows = cash_flow_history(
+        reporting_currency="GBP",
+        end_date=date(2026, 6, 24),
+        portfolio_id=portfolio_id,
+    )
+
+    assert list(values["Portfolio Value"]) == [1000.0, 980.38, 984.34]
+    assert flows.to_dict("records") == [
+        {"Date": "2026-06-22", "Cash Flow": 1000.0}
+    ]
+
+
 def test_return_drawdown_and_mwr_calculations() -> None:
     values = pd.DataFrame(
         {

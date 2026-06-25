@@ -17,6 +17,10 @@ from portfolio_management.tabs.accounts import build_accounts_tab, create_accoun
 from portfolio_management.tabs.brokers import build_brokers_tab
 from portfolio_management.tabs.dashboard import (
     build_dashboard_tab,
+    dashboard_portfolio_scope_changed,
+    dashboard_position_account_changed,
+    dashboard_position_portfolio_changed,
+    dashboard_positions,
     dashboard_scope_changed,
     refresh_dashboard,
 )
@@ -136,6 +140,9 @@ def build_app() -> gr.Blocks:
         mode_toggle = dashboard["mode_toggle"]
         reporting_currency = dashboard["reporting_currency"]
         dashboard_portfolio_filter = dashboard["portfolio_filter"]
+        positions_account_filter = dashboard["positions_account_filter"]
+        positions_portfolio_filter = dashboard["positions_portfolio_filter"]
+        positions_asset_class_filter = dashboard["positions_asset_class_filter"]
         mode_banner_html = dashboard["mode_banner_html"]
 
         build_rebalance_tab(mode_toggle)
@@ -167,7 +174,14 @@ def build_app() -> gr.Blocks:
         # ── Cross-tab: Dashboard refresh (needs top-level mode_banner_html) ──
         dashboard["refresh_dashboard_button"].click(
             fn=refresh_dashboard,
-            inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
+            inputs=[
+                mode_toggle,
+                reporting_currency,
+                dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
+            ],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],
@@ -209,13 +223,16 @@ def build_app() -> gr.Blocks:
                 portfolios["new_portfolio_description"],
                 portfolios["new_portfolio_url"],
                 portfolios["portfolios_filter"],
+                portfolios["portfolio_view_filter"],
             ],
             outputs=[
                 portfolios["portfolio_status"],
                 portfolios["portfolio_account_choice"],
                 data_entry["account_choice"],
                 data_entry["portfolio_choice"],
+                portfolios["portfolio_view_filter"],
                 portfolios["portfolios_table"],
+                portfolios["portfolio_assets_table"],
             ],
         )
 
@@ -225,6 +242,9 @@ def build_app() -> gr.Blocks:
             inputs=[mode_toggle, reporting_currency, tax["tax_year"]],
             outputs=[
                 dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
                 mode_banner_html,
                 dashboard["summary_table"],
                 dashboard["positions_table"],
@@ -235,7 +255,14 @@ def build_app() -> gr.Blocks:
         )
         reporting_currency.change(
             fn=refresh_dashboard,
-            inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
+            inputs=[
+                mode_toggle,
+                reporting_currency,
+                dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
+            ],
             outputs=[
                 mode_banner_html,
                 dashboard["summary_table"],
@@ -245,15 +272,58 @@ def build_app() -> gr.Blocks:
             ],
         )
         dashboard_portfolio_filter.change(
-            fn=refresh_dashboard,
+            fn=dashboard_portfolio_scope_changed,
             inputs=[mode_toggle, reporting_currency, dashboard_portfolio_filter],
             outputs=[
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
                 mode_banner_html,
                 dashboard["summary_table"],
                 dashboard["positions_table"],
                 dashboard["asset_allocation_plot"],
                 dashboard["currency_allocation_plot"],
             ],
+        )
+        positions_account_filter.change(
+            fn=dashboard_position_account_changed,
+            inputs=[
+                mode_toggle,
+                reporting_currency,
+                dashboard_portfolio_filter,
+                positions_account_filter,
+            ],
+            outputs=[
+                positions_portfolio_filter,
+                positions_asset_class_filter,
+                dashboard["positions_table"],
+            ],
+        )
+        positions_portfolio_filter.change(
+            fn=dashboard_position_portfolio_changed,
+            inputs=[
+                mode_toggle,
+                reporting_currency,
+                dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+            ],
+            outputs=[
+                positions_asset_class_filter,
+                dashboard["positions_table"],
+            ],
+        )
+        positions_asset_class_filter.change(
+            fn=dashboard_positions,
+            inputs=[
+                mode_toggle,
+                reporting_currency,
+                dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
+            ],
+            outputs=[dashboard["positions_table"]],
         )
 
     return app

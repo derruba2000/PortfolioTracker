@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from portfolio_management.db.models import (
     Account,
     Broker,
-    FxRateHistory,
     Portfolio,
     PriceHistory,
     Security,
@@ -111,10 +110,15 @@ def cash_flow_history(
     session_factory = get_session_factory()
     with session_factory() as session:
         rows = _transaction_rows(session, account_mode, portfolio_id)
+        settlement_transaction_ids = _trade_settlement_transaction_ids(rows)
         flows: defaultdict[date, Decimal] = defaultdict(Decimal)
         for transaction, _, account, _, security in rows:
             flow_date = transaction.date.date()
-            if security is not None or flow_date > end_date:
+            if (
+                security is not None
+                or transaction.id in settlement_transaction_ids
+                or flow_date > end_date
+            ):
                 continue
             if start_date and flow_date < start_date:
                 continue
@@ -266,6 +270,7 @@ def _portfolio_value(
 ) -> Decimal:
     quantities: defaultdict[int, Decimal] = defaultdict(Decimal)
     cash: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
+    settlement_transaction_ids = _trade_settlement_transaction_ids(rows)
     explicitly_funded_portfolios = {
         portfolio.id
         for transaction, portfolio, _, _, security in rows
@@ -297,11 +302,17 @@ def _portfolio_value(
         )
         if transaction.type == TransactionType.BUY:
             quantities[security.id] += transaction.quantity
-            if portfolio.id in explicitly_funded_portfolios:
+            if (
+                portfolio.id in explicitly_funded_portfolios
+                and transaction.id not in settlement_transaction_ids
+            ):
                 cash[cash_key] -= trade_value
         elif transaction.type == TransactionType.SELL:
             quantities[security.id] -= transaction.quantity
-            if portfolio.id in explicitly_funded_portfolios:
+            if (
+                portfolio.id in explicitly_funded_portfolios
+                and transaction.id not in settlement_transaction_ids
+            ):
                 cash[cash_key] += trade_value
         elif transaction.type == TransactionType.DIVIDEND:
             cash[cash_key] += trade_value
@@ -334,3 +345,50 @@ def _portfolio_value(
             as_of_date,
         )
     return total
+
+
+def _trade_settlement_transaction_ids(
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+) -> set[int]:
+    """Identify explicit cash rows that already settle a recorded BUY or SELL."""
+    trades_by_key: defaultdict[
+        tuple[int, date, str, TransactionType],
+        list[Transaction],
+    ] = defaultdict(list)
+    cash_by_key: defaultdict[
+        tuple[int, date, str, TransactionType],
+        list[Transaction],
+    ] = defaultdict(list)
+
+    for transaction, portfolio, _, _, security in rows:
+        description = (transaction.description or "").strip().casefold()
+        if not description:
+            continue
+        transaction_date = transaction.date.date()
+        if security is not None and transaction.type in {
+            TransactionType.BUY,
+            TransactionType.SELL,
+        }:
+            cash_type = (
+                TransactionType.WITHDRAWAL
+                if transaction.type == TransactionType.BUY
+                else TransactionType.DEPOSIT
+            )
+            trades_by_key[
+                (portfolio.id, transaction_date, description, cash_type)
+            ].append(transaction)
+        elif security is None and transaction.type in {
+            TransactionType.DEPOSIT,
+            TransactionType.WITHDRAWAL,
+        }:
+            cash_by_key[
+                (portfolio.id, transaction_date, description, transaction.type)
+            ].append(transaction)
+
+    matched_ids: set[int] = set()
+    for key, trades in trades_by_key.items():
+        cash_transactions = cash_by_key.get(key, [])
+        for trade, cash_transaction in zip(trades, cash_transactions, strict=False):
+            matched_ids.add(trade.id)
+            matched_ids.add(cash_transaction.id)
+    return matched_ids

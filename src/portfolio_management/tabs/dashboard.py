@@ -27,6 +27,9 @@ from portfolio_management.tabs._shared import (
 
 
 REPORTING_CURRENCIES = ["GBP", "EUR", "USD"]
+ALL_POSITION_ACCOUNTS = "All Accounts"
+ALL_POSITION_PORTFOLIOS = "All Portfolios"
+ALL_ASSET_CLASSES = "All Asset Classes"
 
 
 def dashboard_summary_table(
@@ -48,12 +51,21 @@ def dashboard_positions(
     account_mode: str,
     reporting_currency: str,
     portfolio_choice: str | int | None = None,
+    account_filter: str | None = None,
+    position_portfolio_filter: str | None = None,
+    asset_class_filter: str | None = None,
 ) -> object:
     positions = current_positions(
         account_mode=account_mode,
         reporting_currency=reporting_currency,
         portfolio_id=parse_portfolio_filter(portfolio_choice),
     ).copy()
+    positions = _filter_dashboard_positions(
+        positions,
+        account_filter=account_filter,
+        portfolio_filter=position_portfolio_filter,
+        asset_class_filter=asset_class_filter,
+    )
     if "Portfolio" in positions.columns and "Portfolio URL" in positions.columns:
         positions["Portfolio"] = positions.apply(
             lambda row: portfolio_link(row["Portfolio"], row["Portfolio URL"]),
@@ -70,16 +82,94 @@ def dashboard_positions(
     return positions
 
 
+def dashboard_position_filter_choices(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = None,
+    account_filter: str | None = None,
+    position_portfolio_filter: str | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+    portfolio_positions = _filter_dashboard_positions(
+        positions,
+        account_filter=account_filter,
+        portfolio_filter=None,
+        asset_class_filter=None,
+    )
+    asset_class_positions = _filter_dashboard_positions(
+        portfolio_positions,
+        account_filter=None,
+        portfolio_filter=position_portfolio_filter,
+        asset_class_filter=None,
+    )
+    return (
+        [ALL_POSITION_ACCOUNTS, *_column_choices(positions, "Account")],
+        [
+            ALL_POSITION_PORTFOLIOS,
+            *_column_choices(portfolio_positions, "Portfolio"),
+        ],
+        [
+            ALL_ASSET_CLASSES,
+            *_column_choices(asset_class_positions, "Asset Class"),
+        ],
+    )
+
+
+def _column_choices(positions: object, column: str) -> list[str]:
+    if not hasattr(positions, "columns") or column not in positions.columns:
+        return []
+    return sorted(
+        {
+            str(value).strip()
+            for value in positions[column].dropna()
+            if str(value).strip()
+        }
+    )
+
+
+def _filter_dashboard_positions(
+    positions: object,
+    account_filter: str | None,
+    portfolio_filter: str | None,
+    asset_class_filter: str | None,
+) -> object:
+    filters = (
+        ("Account", account_filter, ALL_POSITION_ACCOUNTS),
+        ("Portfolio", portfolio_filter, ALL_POSITION_PORTFOLIOS),
+        ("Asset Class", asset_class_filter, ALL_ASSET_CLASSES),
+    )
+    for column, selected_value, all_value in filters:
+        if selected_value not in (None, "", all_value) and column in positions.columns:
+            normalized_selection = str(selected_value).strip()
+            normalized_values = positions[column].astype(str).str.strip()
+            positions = positions[normalized_values == normalized_selection]
+    return positions.copy()
+
+
 def refresh_dashboard(
     account_mode: str,
     reporting_currency: str,
     portfolio_choice: str | int | None = None,
+    account_filter: str | None = None,
+    position_portfolio_filter: str | None = None,
+    asset_class_filter: str | None = None,
 ) -> tuple[Any, ...]:
     """Returns (mode_banner_html, summary, positions, asset_alloc, currency_alloc)."""
     return (
         mode_banner(account_mode),
         dashboard_summary_table(account_mode, reporting_currency, portfolio_choice),
-        dashboard_positions(account_mode, reporting_currency, portfolio_choice),
+        dashboard_positions(
+            account_mode,
+            reporting_currency,
+            portfolio_choice,
+            account_filter,
+            position_portfolio_filter,
+            asset_class_filter,
+        ),
         allocation_by_asset_class(
             account_mode=account_mode,
             reporting_currency=reporting_currency,
@@ -98,13 +188,105 @@ def dashboard_scope_changed(
     reporting_currency: str,
 ) -> tuple[Any, ...]:
     choices = portfolio_filter_choices(account_mode)
+    account_choices, position_portfolio_choices, asset_class_choices = (
+        dashboard_position_filter_choices(
+            account_mode,
+            reporting_currency,
+            ALL_PORTFOLIOS,
+        )
+    )
     return (
         gr.update(choices=choices, value=ALL_PORTFOLIOS),
+        gr.update(choices=account_choices, value=ALL_POSITION_ACCOUNTS),
+        gr.update(
+            choices=position_portfolio_choices,
+            value=ALL_POSITION_PORTFOLIOS,
+        ),
+        gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
         *refresh_dashboard(account_mode, reporting_currency, ALL_PORTFOLIOS),
     )
 
 
+def dashboard_portfolio_scope_changed(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None,
+) -> tuple[Any, ...]:
+    account_choices, position_portfolio_choices, asset_class_choices = (
+        dashboard_position_filter_choices(
+            account_mode,
+            reporting_currency,
+            portfolio_choice,
+        )
+    )
+    return (
+        gr.update(choices=account_choices, value=ALL_POSITION_ACCOUNTS),
+        gr.update(
+            choices=position_portfolio_choices,
+            value=ALL_POSITION_PORTFOLIOS,
+        ),
+        gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
+        *refresh_dashboard(account_mode, reporting_currency, portfolio_choice),
+    )
+
+
+def dashboard_position_account_changed(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None,
+    account_filter: str | None,
+) -> tuple[Any, ...]:
+    _, portfolio_choices, asset_class_choices = dashboard_position_filter_choices(
+        account_mode,
+        reporting_currency,
+        portfolio_choice,
+        account_filter=account_filter,
+    )
+    return (
+        gr.update(choices=portfolio_choices, value=ALL_POSITION_PORTFOLIOS),
+        gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
+        dashboard_positions(
+            account_mode,
+            reporting_currency,
+            portfolio_choice,
+            account_filter,
+            ALL_POSITION_PORTFOLIOS,
+            ALL_ASSET_CLASSES,
+        ),
+    )
+
+
+def dashboard_position_portfolio_changed(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None,
+    account_filter: str | None,
+    position_portfolio_filter: str | None,
+) -> tuple[Any, ...]:
+    _, _, asset_class_choices = dashboard_position_filter_choices(
+        account_mode,
+        reporting_currency,
+        portfolio_choice,
+        account_filter=account_filter,
+        position_portfolio_filter=position_portfolio_filter,
+    )
+    return (
+        gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
+        dashboard_positions(
+            account_mode,
+            reporting_currency,
+            portfolio_choice,
+            account_filter,
+            position_portfolio_filter,
+            ALL_ASSET_CLASSES,
+        ),
+    )
+
+
 def build_dashboard_tab() -> dict[str, Any]:
+    account_choices, position_portfolio_choices, asset_class_choices = (
+        dashboard_position_filter_choices(LIVE_MODE, "GBP")
+    )
     with gr.Tab("Dashboard"):
         with gr.Row():
             mode_toggle = gr.Radio(
@@ -113,7 +295,7 @@ def build_dashboard_tab() -> dict[str, Any]:
                 value=LIVE_MODE,
             )
             portfolio_filter = gr.Dropdown(
-                label="Portfolio",
+                label="Dashboard Portfolio Scope",
                 choices=portfolio_filter_choices(LIVE_MODE),
                 value=ALL_PORTFOLIOS,
                 allow_custom_value=False,
@@ -132,6 +314,28 @@ def build_dashboard_tab() -> dict[str, Any]:
             label="Summary",
             interactive=False,
         )
+        with gr.Row():
+            positions_account_filter = gr.Dropdown(
+                label="Account",
+                choices=account_choices,
+                value=ALL_POSITION_ACCOUNTS,
+                allow_custom_value=False,
+                filterable=True,
+            )
+            positions_portfolio_filter = gr.Dropdown(
+                label="Portfolio",
+                choices=position_portfolio_choices,
+                value=ALL_POSITION_PORTFOLIOS,
+                allow_custom_value=False,
+                filterable=True,
+            )
+            positions_asset_class_filter = gr.Dropdown(
+                label="Asset Class",
+                choices=asset_class_choices,
+                value=ALL_ASSET_CLASSES,
+                allow_custom_value=False,
+                filterable=True,
+            )
         positions_table = gr.Dataframe(
             value=lambda: dashboard_positions(LIVE_MODE, "GBP"),
             headers=[
@@ -174,6 +378,9 @@ def build_dashboard_tab() -> dict[str, Any]:
         "mode_toggle": mode_toggle,
         "reporting_currency": reporting_currency,
         "portfolio_filter": portfolio_filter,
+        "positions_account_filter": positions_account_filter,
+        "positions_portfolio_filter": positions_portfolio_filter,
+        "positions_asset_class_filter": positions_asset_class_filter,
         "mode_banner_html": mode_banner_html,
         "summary_table": summary_table,
         "positions_table": positions_table,

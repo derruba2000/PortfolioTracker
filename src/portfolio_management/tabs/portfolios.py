@@ -9,11 +9,21 @@ from portfolio_management.services.accounts import (
     account_choices,
     create_portfolio,
     list_portfolios,
-    portfolio_details,
+    parse_choice_id,
     portfolio_choices_for_account,
+    portfolio_details,
     update_portfolio,
 )
-from portfolio_management.tabs._shared import portfolio_link
+from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, current_positions
+from portfolio_management.tabs._shared import (
+    format_integer_with_commas,
+    format_two_decimals,
+    portfolio_link,
+    ticker_link,
+)
+
+
+ALL_MASTER_PORTFOLIOS = "All Portfolios"
 
 
 def create_portfolio_callback(
@@ -22,6 +32,7 @@ def create_portfolio_callback(
     description: str,
     portfolio_url: str,
     portfolios_filter: str = "All",
+    portfolio_view_choice: str | int | None = None,
 ) -> tuple[Any, ...]:
     try:
         status = create_portfolio(
@@ -31,10 +42,15 @@ def create_portfolio_callback(
             portfolio_url=portfolio_url,
         )
     except Exception as exc:
+        choices = portfolio_view_choices(portfolios_filter)
         return (
             f"Could not create portfolio: {exc}",
-            gr.update(), gr.update(), gr.update(),
-            portfolios_table_data(portfolios_filter),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(choices=choices, value=portfolio_view_choice),
+            portfolios_table_data(portfolios_filter, portfolio_view_choice),
+            portfolio_assets_table_data(portfolio_view_choice),
         )
 
     accounts = account_choices(include_simulated=True)
@@ -43,12 +59,19 @@ def create_portfolio_callback(
         (choice for choice in portfolios if f"| {portfolio_name}" in choice),
         portfolios[0] if portfolios else None,
     )
+    choices = portfolio_view_choices(portfolios_filter)
+    selected_view = _portfolio_view_choice_for_id(
+        choices,
+        parse_choice_id(selected_portfolio),
+    )
     return (
         status,
         gr.update(choices=accounts, value=account_choice),
         gr.update(choices=accounts, value=account_choice),
         gr.update(choices=portfolios, value=selected_portfolio),
-        portfolios_table_data(portfolios_filter),
+        gr.update(choices=choices, value=selected_view),
+        portfolios_table_data(portfolios_filter, selected_view),
+        portfolio_assets_table_data(selected_view),
     )
 
 
@@ -63,6 +86,7 @@ def _update_portfolio_callback(
     portfolio_url: str,
     is_active: bool,
     portfolios_filter: str = "All",
+    portfolio_view_choice: str | int | None = None,
 ) -> tuple[Any, ...]:
     try:
         status = update_portfolio(
@@ -75,15 +99,44 @@ def _update_portfolio_callback(
     except Exception as exc:
         status = f"Could not update portfolio: {exc}"
 
+    choices = portfolio_view_choices(portfolios_filter)
+    selected_view = _portfolio_view_choice_for_id(
+        choices,
+        _parse_portfolio_view_id(portfolio_view_choice),
+    )
     return (
         status,
         gr.update(),
-        portfolios_table_data(portfolios_filter),
+        gr.update(choices=choices, value=selected_view),
+        portfolios_table_data(portfolios_filter, selected_view),
+        portfolio_assets_table_data(selected_view),
     )
 
 
-def portfolios_table_data(portfolios_filter: str = "All") -> object:
+def portfolio_view_choices(portfolios_filter: str = "All") -> list[str]:
     portfolios = list_portfolios(portfolios_filter)
+    choices = [ALL_MASTER_PORTFOLIOS]
+    if not isinstance(portfolios, pd.DataFrame):
+        return choices
+    for _, row in portfolios.iterrows():
+        choices.append(
+            f"{row['ID']} | {row['Broker']} / {row['Account']} / {row['Portfolio']}"
+        )
+    return choices
+
+
+def portfolios_table_data(
+    portfolios_filter: str = "All",
+    portfolio_view_choice: str | int | None = None,
+) -> object:
+    portfolios = list_portfolios(portfolios_filter)
+    portfolio_id = _parse_portfolio_view_id(portfolio_view_choice)
+    if (
+        portfolio_id is not None
+        and isinstance(portfolios, pd.DataFrame)
+        and "ID" in portfolios.columns
+    ):
+        portfolios = portfolios[portfolios["ID"] == portfolio_id].copy()
     if isinstance(portfolios, pd.DataFrame) and "Portfolio" in portfolios.columns:
         if "Portfolio URL" in portfolios.columns:
             portfolios["Portfolio"] = portfolios.apply(
@@ -92,6 +145,103 @@ def portfolios_table_data(portfolios_filter: str = "All") -> object:
             )
         portfolios = portfolios.drop(columns=["Portfolio URL"], errors="ignore")
     return portfolios
+
+
+def portfolio_assets_table_data(
+    portfolio_view_choice: str | int | None = None,
+) -> object:
+    columns = [
+        "Ticker",
+        "Asset",
+        "Asset Class",
+        "Volume",
+        "Price",
+        "Value",
+        "Currency",
+        "Portfolio Description",
+    ]
+    portfolio_id = _parse_portfolio_view_id(portfolio_view_choice)
+    if portfolio_id is None:
+        return pd.DataFrame(columns=columns)
+
+    positions = current_positions(
+        account_mode=ALL_ACCOUNTS_MODE,
+        portfolio_id=portfolio_id,
+    ).copy()
+    if positions.empty:
+        return pd.DataFrame(columns=columns)
+
+    _, description, _, _ = portfolio_details(portfolio_id)
+    assets = positions.rename(
+        columns={
+            "Name": "Asset",
+            "Quantity": "Volume",
+            "Latest Price": "Price",
+            "Market Value": "Value",
+        }
+    )
+    assets["Portfolio Description"] = description
+    assets["Ticker"] = assets["Ticker"].map(ticker_link)
+    assets["Volume"] = assets["Volume"].map(format_integer_with_commas)
+    for column in ["Price", "Value"]:
+        assets[column] = assets[column].map(format_two_decimals)
+    return assets[columns]
+
+
+def _parse_portfolio_view_id(
+    portfolio_view_choice: str | int | None,
+) -> int | None:
+    if portfolio_view_choice in (None, "", ALL_MASTER_PORTFOLIOS):
+        return None
+    return parse_choice_id(portfolio_view_choice)
+
+
+def _portfolio_view_choice_for_id(
+    choices: list[str],
+    portfolio_id: int | None,
+) -> str:
+    if portfolio_id is None:
+        return ALL_MASTER_PORTFOLIOS
+    prefix = f"{portfolio_id} |"
+    return next(
+        (choice for choice in choices if choice.startswith(prefix)),
+        ALL_MASTER_PORTFOLIOS,
+    )
+
+
+def _portfolio_scope_changed(portfolios_filter: str) -> tuple[Any, ...]:
+    choices = portfolio_view_choices(portfolios_filter)
+    return (
+        gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
+        portfolios_table_data(portfolios_filter, ALL_MASTER_PORTFOLIOS),
+        portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
+    )
+
+
+def _portfolio_view_changed(
+    portfolios_filter: str,
+    portfolio_view_choice: str | int | None,
+) -> tuple[Any, ...]:
+    return (
+        portfolios_table_data(portfolios_filter, portfolio_view_choice),
+        portfolio_assets_table_data(portfolio_view_choice),
+    )
+
+
+def _refresh_portfolio_view(
+    portfolios_filter: str,
+    portfolio_view_choice: str | int | None,
+) -> tuple[Any, ...]:
+    choices = portfolio_view_choices(portfolios_filter)
+    selected_view = _portfolio_view_choice_for_id(
+        choices,
+        _parse_portfolio_view_id(portfolio_view_choice),
+    )
+    return (
+        gr.update(choices=choices, value=selected_view),
+        portfolios_table_data(portfolios_filter, selected_view),
+        portfolio_assets_table_data(selected_view),
+    )
 
 
 def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
@@ -111,7 +261,10 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
 
         edit_portfolio_choice = gr.Dropdown(
             label="Edit Portfolio",
-            choices=portfolio_choices_for_account(selected_account, include_inactive=True),
+            choices=portfolio_choices_for_account(
+                selected_account,
+                include_inactive=True,
+            ),
         )
         edit_portfolio_name = gr.Textbox(label="Edit Portfolio Name")
         edit_portfolio_url = gr.Textbox(label="Edit Portfolio URL", placeholder="https://")
@@ -119,23 +272,77 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         edit_portfolio_active = gr.Checkbox(label="Active", value=True)
         update_portfolio_button = gr.Button("Update Portfolio")
 
-        portfolios_filter = gr.Radio(
-            label="Show",
-            choices=["All", "Real", "Test"],
-            value="All",
-        )
+        with gr.Row():
+            portfolios_filter = gr.Radio(
+                label="Show",
+                choices=["All", "Real", "Test"],
+                value="All",
+            )
+            portfolio_view_filter = gr.Dropdown(
+                label="Portfolio",
+                choices=portfolio_view_choices(),
+                value=ALL_MASTER_PORTFOLIOS,
+                allow_custom_value=False,
+                filterable=True,
+            )
         portfolios_table = gr.Dataframe(
             value=portfolios_table_data,
-            headers=["ID", "Broker", "Account", "Portfolio", "Description", "Currency", "Simulated Account", "Active"],
-            datatype=["number", "str", "str", "markdown", "str", "str", "str", "str"],
+            headers=[
+                "ID",
+                "Broker",
+                "Account",
+                "Portfolio",
+                "Description",
+                "Currency",
+                "Simulated Account",
+                "Active",
+            ],
+            datatype=[
+                "number",
+                "str",
+                "str",
+                "markdown",
+                "str",
+                "str",
+                "str",
+                "str",
+            ],
             label="Portfolios",
+            interactive=False,
+        )
+        portfolio_assets_table = gr.Dataframe(
+            value=portfolio_assets_table_data,
+            headers=[
+                "Ticker",
+                "Asset",
+                "Asset Class",
+                "Volume",
+                "Price",
+                "Value",
+                "Currency",
+                "Portfolio Description",
+            ],
+            datatype=[
+                "markdown",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+            ],
+            label="Portfolio Assets",
             interactive=False,
         )
         refresh_portfolios_button = gr.Button("Refresh Portfolios")
 
         portfolio_account_choice.change(
             fn=lambda account_choice: gr.update(
-                choices=portfolio_choices_for_account(account_choice, include_inactive=True),
+                choices=portfolio_choices_for_account(
+                    account_choice,
+                    include_inactive=True,
+                ),
                 value=None,
             ),
             inputs=[portfolio_account_choice],
@@ -144,7 +351,12 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         edit_portfolio_choice.change(
             fn=_load_portfolio_details,
             inputs=[edit_portfolio_choice],
-            outputs=[edit_portfolio_name, edit_portfolio_description, edit_portfolio_url, edit_portfolio_active],
+            outputs=[
+                edit_portfolio_name,
+                edit_portfolio_description,
+                edit_portfolio_url,
+                edit_portfolio_active,
+            ],
         )
         update_portfolio_button.click(
             fn=_update_portfolio_callback,
@@ -155,12 +367,39 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 edit_portfolio_url,
                 edit_portfolio_active,
                 portfolios_filter,
+                portfolio_view_filter,
             ],
-            outputs=[portfolio_status, edit_portfolio_choice, portfolios_table],
+            outputs=[
+                portfolio_status,
+                edit_portfolio_choice,
+                portfolio_view_filter,
+                portfolios_table,
+                portfolio_assets_table,
+            ],
         )
-
-        refresh_portfolios_button.click(fn=portfolios_table_data, inputs=[portfolios_filter], outputs=[portfolios_table])
-        portfolios_filter.change(fn=portfolios_table_data, inputs=[portfolios_filter], outputs=[portfolios_table])
+        refresh_portfolios_button.click(
+            fn=_refresh_portfolio_view,
+            inputs=[portfolios_filter, portfolio_view_filter],
+            outputs=[
+                portfolio_view_filter,
+                portfolios_table,
+                portfolio_assets_table,
+            ],
+        )
+        portfolios_filter.change(
+            fn=_portfolio_scope_changed,
+            inputs=[portfolios_filter],
+            outputs=[
+                portfolio_view_filter,
+                portfolios_table,
+                portfolio_assets_table,
+            ],
+        )
+        portfolio_view_filter.change(
+            fn=_portfolio_view_changed,
+            inputs=[portfolios_filter, portfolio_view_filter],
+            outputs=[portfolios_table, portfolio_assets_table],
+        )
 
     return {
         "portfolio_status": portfolio_status,
@@ -171,5 +410,7 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         "edit_portfolio_choice": edit_portfolio_choice,
         "create_portfolio_button": create_portfolio_button,
         "portfolios_filter": portfolios_filter,
+        "portfolio_view_filter": portfolio_view_filter,
         "portfolios_table": portfolios_table,
+        "portfolio_assets_table": portfolio_assets_table,
     }
