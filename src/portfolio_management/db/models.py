@@ -4,7 +4,19 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from portfolio_management.db.base import Base
@@ -185,6 +197,31 @@ class ImportErrorLog(Base):
         default=lambda: datetime.now(UTC),
     )
     pipeline_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+
+class PortfolioAlert(Base):
+    __tablename__ = "portfolio_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    alert_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    alert_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    is_acknowledged: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("alert_hash", name="uq_portfolio_alerts_alert_hash"),
+    )
 
 
 class PriceHistory(Base):

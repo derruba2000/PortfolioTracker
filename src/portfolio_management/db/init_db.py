@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 
 from portfolio_management.config import load_settings
@@ -12,6 +13,7 @@ from portfolio_management.db.models import (
     Currency,
     FxRateHistory,
     Broker,
+    PortfolioAlert,
     PriceHistory,
     Portfolio,
     Security,
@@ -304,6 +306,49 @@ def migrate_sqlite_schema(engine: object) -> None:
         _migrate_account_strategies_decimal(connection)
         _migrate_price_history_decimal(connection)
         _migrate_fx_rate_history_decimal(connection)
+        _migrate_alert_account_names(connection)
+
+
+def _migrate_alert_account_names(connection: object) -> None:
+    """Replace legacy account IDs in drift messages with account names."""
+    tables = {
+        row[0]
+        for row in connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "portfolio_alerts" not in tables or "accounts" not in tables:
+        return
+
+    account_names = dict(
+        connection.execute(text("SELECT id, name FROM accounts")).fetchall()
+    )
+    alerts = connection.execute(
+        text(
+            """
+            SELECT id, message
+            FROM portfolio_alerts
+            WHERE alert_type = 'DRIFT' AND message LIKE '%for account %'
+            """
+        )
+    ).fetchall()
+    pattern = re.compile(r"\bfor account (\d+)\b", re.IGNORECASE)
+    for alert_id, message in alerts:
+        updated_message = pattern.sub(
+            lambda match: (
+                f"for {account_names[int(match.group(1))]}"
+                if int(match.group(1)) in account_names
+                else match.group(0)
+            ),
+            message,
+        )
+        if updated_message != message:
+            connection.execute(
+                text(
+                    "UPDATE portfolio_alerts SET message = :message WHERE id = :alert_id"
+                ),
+                {"message": updated_message, "alert_id": alert_id},
+            )
 
 
 def _migrate_account_strategies_decimal(connection: object) -> None:

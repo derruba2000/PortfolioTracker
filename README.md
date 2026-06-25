@@ -15,13 +15,24 @@ The app runs at `http://127.0.0.1:7860`.
 
 ## Configuration
 
-Database path is read from `.env` using `DATABASE_PATH`.
+Database and Discord settings are read from `.env`.
 
 ```bash
 DATABASE_PATH=/Users/joaoramo/Data/trading_experiment/portfolio_management.sqlite3
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your-webhook-id/your-webhook-token
+PRICE_DROP_THRESHOLD_PCT=0.5
+DRIFT_TOLERANCE_PCT=5.0
 ```
 
 If `.env` is missing, a default path from `config.py` is used.
+`DISCORD_WEBHOOK_URL` is optional. When it is absent or invalid, the app emits a
+configuration warning and continues with Discord notifications disabled.
+Price-drop and allocation-drift thresholds are percentages and fall back to the
+values shown above when omitted.
+
+New alerts created by `portfolio-monitor` are posted to the configured Discord
+webhook. Delivery failures and rate limits are reported as warnings without
+stopping later monitoring cycles.
 
 The parent database directory is created automatically.
 
@@ -31,6 +42,8 @@ The parent database directory is created automatically.
 poetry run portfolio-init-db   # create/update schema and seed defaults
 poetry run portfolio-seed-db   # seed default benchmarks and strategies
 poetry run portfolio-app       # run UI app (initializes DB first)
+poetry run portfolio-monitor   # continuously evaluate price and drift alerts
+poetry run portfolio-monitor --once  # evaluate alerts once and exit
 poetry run pytest              # run test suite
 ```
 
@@ -44,6 +57,7 @@ Top-level tabs:
 - Transactions Entry
 - Performance
 - Tax
+- Alerts
 - Import / Export
 - Settings
 
@@ -108,6 +122,12 @@ The same tab also exports:
   R-Squared, asset correlations, and historical stress tests.
 - Rebalance tab compares current vs target asset-class allocation and suggests trades.
 - Tax tab shows FIFO realized gains, tax-prep report, and CSV export.
+
+### 5) Alerts
+
+- Active price-drop and portfolio-drift alerts are shown newest first.
+- Select one or more active alerts and acknowledge them to move them into history.
+- Acknowledgment is persisted in SQLite and the tables refresh immediately.
 
 ## Account Scopes
 

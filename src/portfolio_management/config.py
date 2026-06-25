@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import json
+import warnings
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -12,10 +15,20 @@ DEFAULT_DATABASE_PATH = Path(
     "/Users/joaoramo/Data/trading_experiment/portfolio_management.sqlite3"
 )
 DEFAULT_THEME_NAME = "Soft"
+DEFAULT_PRICE_DROP_THRESHOLD_PCT = Decimal("0.5")
+DEFAULT_DRIFT_TOLERANCE_PCT = Decimal("5.0")
 SETTINGS_PATH = Path.home() / ".portfolio_management" / "settings.json"
 
 
 _MISSING = object()
+
+
+class DiscordWebhookConfigurationWarning(UserWarning):
+    """Discord notifications are disabled because webhook configuration is missing."""
+
+
+class AlertThresholdConfigurationWarning(UserWarning):
+    """An alert threshold is invalid and its default value will be used."""
 
 
 @dataclass(frozen=True)
@@ -25,6 +38,9 @@ class Settings:
     export_symbols_csv_path: Path | None = None
     market_prices_delta_path: Path | None = None
     fx_rates_delta_path: Path | None = None
+    discord_webhook_url: str | None = None
+    price_drop_threshold_pct: Decimal = DEFAULT_PRICE_DROP_THRESHOLD_PCT
+    drift_tolerance_pct: Decimal = DEFAULT_DRIFT_TOLERANCE_PCT
 
     @property
     def database_url(self) -> str:
@@ -38,6 +54,15 @@ def load_settings() -> Settings:
     export_symbols_csv_path: Path | None = None
     market_prices_delta_path: Path | None = None
     fx_rates_delta_path: Path | None = None
+    discord_webhook_url = _load_discord_webhook_url()
+    price_drop_threshold_pct = _load_non_negative_decimal(
+        "PRICE_DROP_THRESHOLD_PCT",
+        DEFAULT_PRICE_DROP_THRESHOLD_PCT,
+    )
+    drift_tolerance_pct = _load_non_negative_decimal(
+        "DRIFT_TOLERANCE_PCT",
+        DEFAULT_DRIFT_TOLERANCE_PCT,
+    )
 
     if SETTINGS_PATH.exists():
         try:
@@ -60,6 +85,9 @@ def load_settings() -> Settings:
         export_symbols_csv_path=export_symbols_csv_path,
         market_prices_delta_path=market_prices_delta_path,
         fx_rates_delta_path=fx_rates_delta_path,
+        discord_webhook_url=discord_webhook_url,
+        price_drop_threshold_pct=price_drop_threshold_pct,
+        drift_tolerance_pct=drift_tolerance_pct,
     )
 
 
@@ -86,6 +114,9 @@ def save_settings(
         export_symbols_csv_path=resolved_csv,
         market_prices_delta_path=resolved_prices_delta,
         fx_rates_delta_path=resolved_fx_delta,
+        discord_webhook_url=current.discord_webhook_url,
+        price_drop_threshold_pct=current.price_drop_threshold_pct,
+        drift_tolerance_pct=current.drift_tolerance_pct,
     )
     data: dict[str, str | None] = {"theme_name": updated.theme_name}
     if updated.export_symbols_csv_path is not None:
@@ -105,3 +136,44 @@ def _resolve_optional_path(value: object, current: Path | None) -> Path | None:
     if value:
         return Path(str(value)).expanduser()
     return None
+
+
+def _load_discord_webhook_url() -> str | None:
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        warnings.warn(
+            "DISCORD_WEBHOOK_URL is not configured; Discord notifications are disabled.",
+            DiscordWebhookConfigurationWarning,
+            stacklevel=2,
+        )
+        return None
+
+    parsed_url = urlparse(webhook_url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc:
+        warnings.warn(
+            "DISCORD_WEBHOOK_URL must be an absolute HTTPS URL; "
+            "Discord notifications are disabled.",
+            DiscordWebhookConfigurationWarning,
+            stacklevel=2,
+        )
+        return None
+
+    return webhook_url
+
+
+def _load_non_negative_decimal(name: str, default: Decimal) -> Decimal:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation:
+        value = Decimal("-1")
+    if not value.is_finite() or value < 0:
+        warnings.warn(
+            f"{name} must be a non-negative number; using default {default}.",
+            AlertThresholdConfigurationWarning,
+            stacklevel=2,
+        )
+        return default
+    return value

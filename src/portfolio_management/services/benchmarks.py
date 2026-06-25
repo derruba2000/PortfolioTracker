@@ -58,11 +58,18 @@ def benchmark_overlay(
 
     start_date = date.fromisoformat(str(portfolio_curve.iloc[0]["Date"]))
     end_date = date.fromisoformat(str(portfolio_curve.iloc[-1]["Date"]))
-    local_history = benchmark_price_history(ticker, start_date, end_date)
-    if not local_history.empty:
+    local_history = (
+        pd.DataFrame()
+        if fetcher is not None
+        else benchmark_price_history(ticker, start_date, end_date)
+    )
+    if fetcher is not None:
+        history = fetcher(ticker, start_date, end_date)
+        benchmark_records = _normalise_benchmark_history(history)
+    elif not local_history.empty:
         benchmark_records = _normalise_local_benchmark_history(local_history)
     else:
-        history = (fetcher or fetch_yfinance_history)(ticker, start_date, end_date)
+        history = fetch_yfinance_history(ticker, start_date, end_date)
         benchmark_records = _normalise_benchmark_history(history)
     return _overlay_dataframe(portfolio_records + benchmark_records)
 

@@ -82,6 +82,65 @@ def test_import_error_log_records_pipeline_message_and_timestamp() -> None:
     assert error.timestamp is not None
 
 
+def test_schema_migration_replaces_alert_account_ids_with_names() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO brokers (id, name, is_active)
+                VALUES (1, 'Broker', 1)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO accounts (
+                    id, broker_id, name, currency_code, is_simulated, is_active
+                ) VALUES (
+                    7, 1, 'Retirement ISA', 'GBP', 0, 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO portfolios (id, account_id, name, is_active)
+                VALUES (1, 7, 'Default Portfolio', 1)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO portfolio_alerts (
+                    alert_hash, alert_type, message
+                ) VALUES (
+                    'legacy-drift',
+                    'DRIFT',
+                    'DRIFT ALERT: EQUITY is 6.0% above target for account 7, exceeding tolerance.'
+                )
+                """
+            )
+        )
+
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        message = connection.execute(
+            text(
+                "SELECT message FROM portfolio_alerts WHERE alert_hash = 'legacy-drift'"
+            )
+        ).scalar_one()
+
+    assert "for Retirement ISA" in message
+    assert "account 7" not in message
+
+
 def test_transaction_schema_migration_preserves_decimal_values() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
 

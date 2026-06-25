@@ -14,6 +14,7 @@ import gradio as gr
 from portfolio_management.config import load_settings
 from portfolio_management.db.init_db import initialize_database
 from portfolio_management.tabs.accounts import build_accounts_tab, create_account_callback
+from portfolio_management.tabs.alerts import build_alerts_tab
 from portfolio_management.tabs.brokers import build_brokers_tab
 from portfolio_management.tabs.dashboard import (
     build_dashboard_tab,
@@ -155,6 +156,7 @@ def build_app() -> gr.Blocks:
         data_entry = build_data_entry_tab(selected_account, selected_portfolio)
         performance = build_performance_tab(mode_toggle)
         tax = build_tax_tab(mode_toggle)
+        build_alerts_tab()
         import_export = build_export_tab()
         settings_tab = build_settings_tab()
 
