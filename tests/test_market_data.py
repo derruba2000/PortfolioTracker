@@ -51,7 +51,7 @@ def test_update_market_data_stores_prices_and_fx_rates() -> None:
         security = Security(
             ticker="VWCE.AS",
             name="Vanguard FTSE All-World UCITS ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="EUR",
         )
         session.add(

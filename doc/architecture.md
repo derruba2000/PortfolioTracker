@@ -141,7 +141,9 @@ Cross-tab orchestration lives in `app.py`:
 - `services/performance.py`: TWR, MWR/XIRR, drawdown, risk, benchmark,
   correlation, and stress-test calculations.
 - `services/securities.py`: security CRUD and ticker defaults.
-- `services/reference_data.py`: currency and asset class lookup/validation.
+- `services/reference_data.py`: currency and asset class lookup/validation. ETF is not
+  an asset class; fund wrapper/exposure modelling belongs outside the asset class
+  master data.
 - `services/query_filters.py`: simulated-account exclusion helpers.
 
 ## Performance Analysis Engine
@@ -220,6 +222,11 @@ erDiagram
         string name
         string description
         string portfolio_url
+        string portfolio_goals
+        string goal_type
+        string goal_timeline
+        string rewritten_goals
+        string strategy_recommendation
         bool is_active
     }
 
@@ -229,6 +236,7 @@ erDiagram
         string name
         string description
         string asset_class
+        string asset_subclass
         string currency_code
     }
 

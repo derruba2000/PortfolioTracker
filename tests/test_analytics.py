@@ -201,7 +201,7 @@ def test_dashboard_reporting_currency_converts_prices_costs_values_and_charts(
         security = Security(
             ticker="VWCE.AS",
             name="Global ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="EUR",
         )
         session.add_all(
@@ -350,7 +350,7 @@ def test_dashboard_reporting_currency_rejects_missing_usd_leg(monkeypatch) -> No
         security = Security(
             ticker="VWCE.AS",
             name="Global ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="EUR",
         )
         session.add(
@@ -463,13 +463,13 @@ def test_dashboard_resolves_unique_exchange_qualified_price_symbol(monkeypatch) 
         holding_security = Security(
             ticker="VWRP",
             name="Vanguard FTSE All-World UCITS ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         priced_security = Security(
             ticker="VWRP.L",
             name="Vanguard FTSE All-World UCITS ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         session.add_all(

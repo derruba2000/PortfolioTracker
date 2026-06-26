@@ -26,7 +26,6 @@ from portfolio_management.db.types import SqliteDecimal
 class AssetClass(StrEnum):
     CASH = "CASH"
     EQUITY = "EQUITY"
-    ETF = "ETF"
     BOND = "BOND"
     FUND = "FUND"
     CRYPTO = "CRYPTO"
@@ -104,6 +103,11 @@ class Portfolio(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
     portfolio_url: Mapped[str | None] = mapped_column(String(2000))
+    portfolio_goals: Mapped[str | None] = mapped_column(Text)
+    goal_type: Mapped[str | None] = mapped_column(String(64))
+    goal_timeline: Mapped[str | None] = mapped_column(String(64))
+    rewritten_goals: Mapped[str | None] = mapped_column(Text)
+    strategy_recommendation: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     account: Mapped[Account] = relationship(back_populates="portfolios")
@@ -146,6 +150,7 @@ class Security(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
     asset_class: Mapped[AssetClass] = mapped_column(Enum(AssetClass), nullable=False)
+    asset_subclass: Mapped[str] = mapped_column(String(64), nullable=False, default="STOCK")
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
 
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="security")

@@ -7,12 +7,15 @@ from portfolio_management.db.base import Base
 from portfolio_management.db.models import Portfolio
 from portfolio_management.services.accounts import (
     account_description,
+    create_portfolio,
     get_or_create_account,
     get_or_create_broker,
     get_or_create_portfolio,
     list_accounts,
     list_brokers,
     list_portfolios,
+    portfolio_details,
+    update_portfolio,
     update_account_description,
 )
 
@@ -107,3 +110,54 @@ def test_update_account_description(monkeypatch) -> None:
     update_account_description(account_choice, "New description for later notes")
 
     assert account_description(account_choice) == "New description for later notes"
+
+
+def test_portfolio_goals_are_saved_and_listed(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    monkeypatch.setattr(
+        "portfolio_management.services.accounts.get_session_factory",
+        lambda: factory,
+    )
+
+    with Session(engine) as session:
+        broker = get_or_create_broker(session, "Vanguard")
+        account = get_or_create_account(
+            session=session,
+            broker=broker,
+            name="ISA",
+            currency_code="GBP",
+        )
+        session.commit()
+        account_choice = f"{account.id} | Vanguard / ISA"
+
+    create_portfolio(
+        account_choice=account_choice,
+        portfolio_name="Goals",
+        description="Goal-based portfolio",
+        portfolio_goals=["Retirement", "Income"],
+        goal_type="Balanced",
+        goal_timeline="10+ years",
+    )
+    portfolios = list_portfolios()
+    portfolio_choice = f"{portfolios.loc[0, 'ID']} | Vanguard / ISA / Goals"
+
+    update_portfolio(
+        portfolio_choice=portfolio_choice,
+        portfolio_name="Goals",
+        description="Updated",
+        portfolio_url="",
+        portfolio_goals=["Capital Growth"],
+        goal_type="Growth",
+        goal_timeline="5-10 years",
+        is_active=True,
+    )
+
+    details = portfolio_details(portfolio_choice)
+    portfolios = list_portfolios()
+
+    assert details[3] == ["Capital Growth"]
+    assert details[4] == "Growth"
+    assert details[5] == "5-10 years"
+    assert portfolios.loc[0, "Goals"] == "Capital Growth"

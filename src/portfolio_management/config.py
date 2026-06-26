@@ -17,6 +17,9 @@ DEFAULT_DATABASE_PATH = Path(
 DEFAULT_THEME_NAME = "Soft"
 DEFAULT_PRICE_DROP_THRESHOLD_PCT = Decimal("0.5")
 DEFAULT_DRIFT_TOLERANCE_PCT = Decimal("5.0")
+DEFAULT_OLLAMA_MODEL = "gemma4"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300
 SETTINGS_PATH = Path.home() / ".portfolio_management" / "settings.json"
 
 
@@ -41,6 +44,9 @@ class Settings:
     discord_webhook_url: str | None = None
     price_drop_threshold_pct: Decimal = DEFAULT_PRICE_DROP_THRESHOLD_PCT
     drift_tolerance_pct: Decimal = DEFAULT_DRIFT_TOLERANCE_PCT
+    ollama_model: str = DEFAULT_OLLAMA_MODEL
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
+    ollama_timeout_seconds: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS
 
     @property
     def database_url(self) -> str:
@@ -62,6 +68,15 @@ def load_settings() -> Settings:
     drift_tolerance_pct = _load_non_negative_decimal(
         "DRIFT_TOLERANCE_PCT",
         DEFAULT_DRIFT_TOLERANCE_PCT,
+    )
+    ollama_model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+    ollama_base_url = (
+        os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip()
+        or DEFAULT_OLLAMA_BASE_URL
+    ).rstrip("/")
+    ollama_timeout_seconds = _load_positive_int(
+        "OLLAMA_TIMEOUT_SECONDS",
+        DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     )
 
     if SETTINGS_PATH.exists():
@@ -88,6 +103,9 @@ def load_settings() -> Settings:
         discord_webhook_url=discord_webhook_url,
         price_drop_threshold_pct=price_drop_threshold_pct,
         drift_tolerance_pct=drift_tolerance_pct,
+        ollama_model=ollama_model,
+        ollama_base_url=ollama_base_url,
+        ollama_timeout_seconds=ollama_timeout_seconds,
     )
 
 
@@ -177,3 +195,14 @@ def _load_non_negative_decimal(name: str, default: Decimal) -> Decimal:
         )
         return default
     return value
+
+
+def _load_positive_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default

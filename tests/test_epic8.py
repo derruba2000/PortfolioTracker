@@ -162,7 +162,7 @@ def test_stored_price_detection_uses_latest_two_prices_for_tracked_securities(
         security = Security(
             ticker="VWRP.L",
             name="Vanguard FTSE All-World",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         session.add_all(

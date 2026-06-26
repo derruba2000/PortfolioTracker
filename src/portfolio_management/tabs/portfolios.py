@@ -10,11 +10,18 @@ from portfolio_management.services.accounts import (
     create_portfolio,
     list_portfolios,
     parse_choice_id,
+    portfolio_goal_choices,
+    portfolio_goal_type_choices,
     portfolio_choices_for_account,
     portfolio_details,
+    portfolio_timeline_choices,
     update_portfolio,
 )
 from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, current_positions
+from portfolio_management.services.portfolio_recommendations import (
+    generate_and_store_portfolio_recommendation,
+    start_portfolio_goal_conversation,
+)
 from portfolio_management.tabs._shared import (
     format_integer_with_commas,
     format_two_decimals,
@@ -31,6 +38,9 @@ def create_portfolio_callback(
     portfolio_name: str,
     description: str,
     portfolio_url: str,
+    portfolio_goals: list[str] | None,
+    goal_type: str,
+    goal_timeline: str,
     portfolios_filter: str = "All",
     portfolio_view_choice: str | int | None = None,
 ) -> tuple[Any, ...]:
@@ -40,6 +50,9 @@ def create_portfolio_callback(
             portfolio_name=portfolio_name,
             description=description,
             portfolio_url=portfolio_url,
+            portfolio_goals=portfolio_goals,
+            goal_type=goal_type,
+            goal_timeline=goal_timeline,
         )
     except Exception as exc:
         choices = portfolio_view_choices(portfolios_filter)
@@ -75,7 +88,7 @@ def create_portfolio_callback(
     )
 
 
-def _load_portfolio_details(portfolio_choice: str) -> tuple[str, str, str, bool]:
+def _load_portfolio_details(portfolio_choice: str) -> tuple[Any, ...]:
     return portfolio_details(portfolio_choice)
 
 
@@ -84,6 +97,9 @@ def _update_portfolio_callback(
     portfolio_name: str,
     description: str,
     portfolio_url: str,
+    portfolio_goals: list[str] | None,
+    goal_type: str,
+    goal_timeline: str,
     is_active: bool,
     portfolios_filter: str = "All",
     portfolio_view_choice: str | int | None = None,
@@ -94,6 +110,9 @@ def _update_portfolio_callback(
             portfolio_name=portfolio_name,
             description=description,
             portfolio_url=portfolio_url,
+            portfolio_goals=portfolio_goals,
+            goal_type=goal_type,
+            goal_timeline=goal_timeline,
             is_active=is_active,
         )
     except Exception as exc:
@@ -171,7 +190,7 @@ def portfolio_assets_table_data(
     if positions.empty:
         return pd.DataFrame(columns=columns)
 
-    _, description, _, _ = portfolio_details(portfolio_id)
+    _, description, *_rest = portfolio_details(portfolio_id)
     assets = positions.rename(
         columns={
             "Name": "Asset",
@@ -237,6 +256,29 @@ def _refresh_portfolio_view(
         choices,
         _parse_portfolio_view_id(portfolio_view_choice),
     )
+
+
+def _get_llm_recommendation(
+    portfolio_choice: str | int | None,
+    user_answers: str,
+    portfolios_filter: str,
+    portfolio_view_choice: str | int | None,
+) -> tuple[Any, ...]:
+    try:
+        status, rewritten_goals, recommendation = generate_and_store_portfolio_recommendation(
+            portfolio_choice,
+            user_answers,
+        )
+    except Exception as exc:
+        status = f"Could not get LLM recommendation: {exc}"
+        rewritten_goals = ""
+        recommendation = ""
+    return (
+        status,
+        rewritten_goals,
+        recommendation,
+        portfolios_table_data(portfolios_filter, portfolio_view_choice),
+    )
     return (
         gr.update(choices=choices, value=selected_view),
         portfolios_table_data(portfolios_filter, selected_view),
@@ -257,6 +299,21 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
             new_portfolio_name = gr.Textbox(label="Portfolio", value="Default Portfolio")
             new_portfolio_url = gr.Textbox(label="Portfolio URL", placeholder="https://")
         new_portfolio_description = gr.Textbox(label="Description", lines=3)
+        with gr.Row():
+            new_portfolio_goals = gr.CheckboxGroup(
+                label="Portfolio Goals",
+                choices=portfolio_goal_choices(),
+            )
+            new_goal_type = gr.Dropdown(
+                label="Goal Type",
+                choices=portfolio_goal_type_choices(),
+                value=None,
+            )
+            new_goal_timeline = gr.Dropdown(
+                label="Timeline",
+                choices=portfolio_timeline_choices(),
+                value=None,
+            )
         create_portfolio_button = gr.Button("Create Portfolio", variant="primary")
 
         edit_portfolio_choice = gr.Dropdown(
@@ -269,8 +326,39 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         edit_portfolio_name = gr.Textbox(label="Edit Portfolio Name")
         edit_portfolio_url = gr.Textbox(label="Edit Portfolio URL", placeholder="https://")
         edit_portfolio_description = gr.Textbox(label="Edit Description", lines=3)
+        with gr.Row():
+            edit_portfolio_goals = gr.CheckboxGroup(
+                label="Edit Portfolio Goals",
+                choices=portfolio_goal_choices(),
+            )
+            edit_goal_type = gr.Dropdown(
+                label="Edit Goal Type",
+                choices=portfolio_goal_type_choices(),
+                value=None,
+            )
+            edit_goal_timeline = gr.Dropdown(
+                label="Edit Timeline",
+                choices=portfolio_timeline_choices(),
+                value=None,
+            )
+        edit_rewritten_goals = gr.Textbox(
+            label="LLM Rewritten Goals",
+            lines=4,
+            interactive=False,
+        )
+        edit_strategy_recommendation = gr.Textbox(
+            label="LLM Strategy Recommendation",
+            lines=6,
+            interactive=False,
+        )
         edit_portfolio_active = gr.Checkbox(label="Active", value=True)
         update_portfolio_button = gr.Button("Update Portfolio")
+
+        llm_questions = gr.Textbox(label="LLM Conversation", lines=8)
+        llm_answers = gr.Textbox(label="Your Objectives, Risk Tolerance, and Time Horizon", lines=6)
+        with gr.Row():
+            start_llm_button = gr.Button("Start LLM Conversation")
+            get_llm_recommendation_button = gr.Button("Get LLM Recommendation")
 
         with gr.Row():
             portfolios_filter = gr.Radio(
@@ -293,6 +381,11 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 "Account",
                 "Portfolio",
                 "Description",
+                "Goals",
+                "Goal Type",
+                "Timeline",
+                "Rewritten Goals",
+                "Strategy Recommendation",
                 "Currency",
                 "Simulated Account",
                 "Active",
@@ -302,6 +395,11 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 "str",
                 "str",
                 "markdown",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
                 "str",
                 "str",
                 "str",
@@ -355,6 +453,11 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 edit_portfolio_name,
                 edit_portfolio_description,
                 edit_portfolio_url,
+                edit_portfolio_goals,
+                edit_goal_type,
+                edit_goal_timeline,
+                edit_rewritten_goals,
+                edit_strategy_recommendation,
                 edit_portfolio_active,
             ],
         )
@@ -365,6 +468,9 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 edit_portfolio_name,
                 edit_portfolio_description,
                 edit_portfolio_url,
+                edit_portfolio_goals,
+                edit_goal_type,
+                edit_goal_timeline,
                 edit_portfolio_active,
                 portfolios_filter,
                 portfolio_view_filter,
@@ -375,6 +481,25 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
                 portfolio_view_filter,
                 portfolios_table,
                 portfolio_assets_table,
+            ],
+        )
+        start_llm_button.click(
+            fn=start_portfolio_goal_conversation,
+            outputs=[llm_questions],
+        )
+        get_llm_recommendation_button.click(
+            fn=_get_llm_recommendation,
+            inputs=[
+                edit_portfolio_choice,
+                llm_answers,
+                portfolios_filter,
+                portfolio_view_filter,
+            ],
+            outputs=[
+                portfolio_status,
+                edit_rewritten_goals,
+                edit_strategy_recommendation,
+                portfolios_table,
             ],
         )
         refresh_portfolios_button.click(
@@ -407,6 +532,9 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         "new_portfolio_name": new_portfolio_name,
         "new_portfolio_url": new_portfolio_url,
         "new_portfolio_description": new_portfolio_description,
+        "new_portfolio_goals": new_portfolio_goals,
+        "new_goal_type": new_goal_type,
+        "new_goal_timeline": new_goal_timeline,
         "edit_portfolio_choice": edit_portfolio_choice,
         "create_portfolio_button": create_portfolio_button,
         "portfolios_filter": portfolios_filter,

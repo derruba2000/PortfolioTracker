@@ -373,3 +373,91 @@ def test_history_schema_migration_adds_ohlcv_and_preserves_close_values() -> Non
     assert Decimal(str(price.close)) == Decimal("101.5")
     assert Decimal(str(fx_rate.close)) == Decimal("0.85")
     assert fx_rate.symbol == "EURGBP=X"
+
+
+def test_security_migration_adds_asset_subclass_and_removes_etf_master_data() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE brokers (id INTEGER PRIMARY KEY, name TEXT)"))
+        connection.execute(text("CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT)"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE portfolios (
+                    id INTEGER PRIMARY KEY,
+                    account_id INTEGER NOT NULL,
+                    name TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE transactions (
+                    id INTEGER PRIMARY KEY,
+                    portfolio_id INTEGER NOT NULL,
+                    security_id INTEGER,
+                    date DATETIME NOT NULL,
+                    type VARCHAR(10) NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    price DECIMAL NOT NULL,
+                    fees DECIMAL NOT NULL,
+                    total_value DECIMAL NOT NULL,
+                    currency_exchange_rate DECIMAL NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE securities (
+                    id INTEGER PRIMARY KEY,
+                    ticker VARCHAR(32) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    asset_class VARCHAR(32) NOT NULL,
+                    currency_code VARCHAR(3) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE asset_classes (
+                    code VARCHAR(32) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    display_order INTEGER NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(text("INSERT INTO asset_classes VALUES ('ETF', 'ETF', 2)"))
+        connection.execute(
+            text(
+                """
+                INSERT INTO securities (id, ticker, name, asset_class, currency_code)
+                VALUES (1, 'VWRP', 'Vanguard ETF', 'ETF', 'GBP')
+                """
+            )
+        )
+
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(securities)")).fetchall()
+        }
+        security = connection.execute(
+            text("SELECT asset_class, asset_subclass FROM securities WHERE id = 1")
+        ).one()
+        etf_master_count = connection.execute(
+            text("SELECT COUNT(*) FROM asset_classes WHERE code = 'ETF'")
+        ).scalar_one()
+
+    assert "asset_subclass" in columns
+    assert security == ("EQUITY", "ETF 100% EQUITY")
+    assert etf_master_count == 0

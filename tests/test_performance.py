@@ -51,7 +51,7 @@ def test_performance_data_layer_extracts_values_prices_and_external_flows(
         security = Security(
             ticker="ETF.L",
             name="ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         session.add_all(
@@ -124,7 +124,7 @@ def test_portfolio_value_without_explicit_cash_uses_full_holding_value(
         security = Security(
             ticker="ETF",
             name="ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="USD",
         )
         session.add_all(
@@ -184,13 +184,13 @@ def test_performance_does_not_double_count_explicit_trade_settlement(
         holding_security = Security(
             ticker="VWRP",
             name="Vanguard Funds Plc (VWRP)",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         priced_security = Security(
             ticker="VWRP.L",
             name="Vanguard FTSE All-World UCITS ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             currency_code="GBP",
         )
         session.add_all(

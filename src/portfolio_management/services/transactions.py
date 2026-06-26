@@ -27,7 +27,6 @@ from portfolio_management.services.accounts import (
     get_or_create_portfolio,
     parse_choice_id,
 )
-from portfolio_management.services.reference_data import is_known_asset_class
 
 
 DEFAULT_BROKER_NAME = "Default Broker"
@@ -464,6 +463,7 @@ def _get_or_create_security(
             name=transaction_input.security_name or transaction_input.ticker,
             description=transaction_input.security_name or None,
             asset_class=transaction_input.asset_class,
+            asset_subclass=_default_asset_subclass(transaction_input.asset_class),
             currency_code=transaction_input.security_currency_code,
         )
         session.add(security)
@@ -485,6 +485,20 @@ def _normalize_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         }
     )
     return dataframe
+
+
+def _default_asset_subclass(asset_class: AssetClass) -> str:
+    if asset_class == AssetClass.BOND:
+        return "BOND"
+    if asset_class == AssetClass.CRYPTO:
+        return "CRYPTO"
+    if asset_class == AssetClass.REAL_ESTATE:
+        return "REAL ESTATE"
+    if asset_class == AssetClass.COMMODITY:
+        return "COMMODITY"
+    if asset_class == AssetClass.CASH:
+        return "CASH"
+    return "STOCK"
 
 
 def _normalize_mapping(raw_values: dict[str, Any]) -> dict[str, Any]:
@@ -516,10 +530,11 @@ def _parse_asset_class(value: Any) -> AssetClass:
     if not clean_value:
         return AssetClass.EQUITY
 
-    if not is_known_asset_class(clean_value):
+    try:
+        return AssetClass(clean_value)
+    except ValueError as exc:
         allowed = ", ".join(asset_class.value for asset_class in AssetClass)
-        raise ValueError(f"Unsupported asset class '{clean_value}'. Use one of: {allowed}.")
-    return AssetClass(clean_value)
+        raise ValueError(f"Unsupported asset class '{clean_value}'. Use one of: {allowed}.") from exc
 
 
 def _parse_datetime(value: Any) -> datetime:

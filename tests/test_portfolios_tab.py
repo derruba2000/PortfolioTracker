@@ -62,7 +62,7 @@ def test_portfolio_assets_table_uses_selected_portfolio(monkeypatch) -> None:
             {
                 "Ticker": "AAA",
                 "Name": "Alpha",
-                "Asset Class": "ETF",
+                "Asset Class": "BOND",
                 "Quantity": "10",
                 "Latest Price": "12.5",
                 "Market Value": "125",

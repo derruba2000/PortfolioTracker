@@ -15,7 +15,7 @@ from portfolio_management.services.transactions import (
     list_transactions,
     transfer_cash,
 )
-from portfolio_management.services.reference_data import list_asset_class_codes, list_currency_codes
+from portfolio_management.services.reference_data import list_currency_codes
 from portfolio_management.services.securities import get_security_defaults, list_security_tickers
 from portfolio_management.tabs._shared import (
     as_date_table,
@@ -59,10 +59,6 @@ def _auto_total_value(quantity: str, price: str, current_total: str) -> str:
         return ""
 
 
-def _security_asset_classes() -> list[str]:
-    return list_asset_class_codes()
-
-
 def _security_currencies() -> list[str]:
     return list_currency_codes()
 
@@ -74,15 +70,15 @@ def _ticker_choices() -> list[str]:
 def _ticker_changed(
     ticker: str,
     current_description: str,
-    current_asset_class: str,
     current_currency: str,
-) -> tuple[str, str, str]:
-    return get_security_defaults(
+) -> tuple[str, str]:
+    description, _asset_class, currency = get_security_defaults(
         ticker=ticker,
         current_description=current_description,
-        current_asset_class=current_asset_class,
+        current_asset_class="EQUITY",
         current_currency=current_currency,
     )
+    return description, currency
 
 
 def _account_choices_for_filter(transactions_filter: str) -> list[str]:
@@ -121,7 +117,6 @@ def _add_manual_transaction(
     description: str,
     ticker: str,
     security_name: str,
-    asset_class: str,
     security_currency_code: str,
     quantity: str,
     price: str,
@@ -143,7 +138,7 @@ def _add_manual_transaction(
             description=description,
             ticker=ticker,
             security_name=security_name,
-            asset_class=asset_class,
+            asset_class="EQUITY",
             security_currency_code=security_currency_code,
             quantity=quantity,
             price=price,
@@ -240,12 +235,6 @@ def build_data_entry_tab(
 
                 with gr.Row():
                     security_name = gr.Textbox(label="Security Name")
-                    asset_class = gr.Dropdown(
-                        label="Asset Class",
-                        choices=_security_asset_classes(),
-                        value="EQUITY",
-                        allow_custom_value=True,
-                    )
                     security_currency_code = gr.Dropdown(
                         label="Security Currency",
                         choices=_security_currencies(),
@@ -275,8 +264,8 @@ def build_data_entry_tab(
 
                 ticker.change(
                     fn=_ticker_changed,
-                    inputs=[ticker, security_name, asset_class, security_currency_code],
-                    outputs=[security_name, asset_class, security_currency_code],
+                    inputs=[ticker, security_name, security_currency_code],
+                    outputs=[security_name, security_currency_code],
                 )
 
                 txns_table = gr.Dataframe(
@@ -333,7 +322,7 @@ def build_data_entry_tab(
             fn=_add_manual_transaction,
             inputs=[
                 portfolio_choice, date, transaction_type, transaction_description,
-                ticker, security_name, asset_class, security_currency_code,
+                ticker, security_name, security_currency_code,
                 quantity, price, fees, total_value, currency_exchange_rate,
                 transactions_filter,
             ],

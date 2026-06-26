@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +11,79 @@ from portfolio_management.db.session import get_session_factory
 
 
 DEFAULT_PORTFOLIO_NAME = "Default Portfolio"
+PORTFOLIO_GOAL_CHOICES = [
+    "Capital Growth",
+    "Income",
+    "Capital Preservation",
+    "Retirement",
+    "Education",
+    "House Purchase",
+    "Emergency Reserve",
+    "Inflation Protection",
+    "Tax Efficiency",
+    "Speculative Growth",
+]
+PORTFOLIO_GOAL_TYPE_CHOICES = [
+    "Core",
+    "Satellite",
+    "Income",
+    "Growth",
+    "Balanced",
+    "Defensive",
+    "Speculative",
+    "Tax Efficient",
+]
+PORTFOLIO_TIMELINE_CHOICES = [
+    "0-1 years",
+    "1-3 years",
+    "3-5 years",
+    "5-10 years",
+    "10+ years",
+]
+
+
+def portfolio_goal_choices() -> list[str]:
+    return PORTFOLIO_GOAL_CHOICES.copy()
+
+
+def portfolio_goal_type_choices() -> list[str]:
+    return PORTFOLIO_GOAL_TYPE_CHOICES.copy()
+
+
+def portfolio_timeline_choices() -> list[str]:
+    return PORTFOLIO_TIMELINE_CHOICES.copy()
+
+
+def _serialize_goal_list(goals: list[str] | str | None) -> str | None:
+    if goals is None:
+        return None
+    if isinstance(goals, str):
+        values = [goals] if goals.strip() else []
+    else:
+        values = [str(goal).strip() for goal in goals if str(goal).strip()]
+    cleaned = [goal for goal in values if goal in PORTFOLIO_GOAL_CHOICES]
+    return json.dumps(cleaned) if cleaned else None
+
+
+def _deserialize_goal_list(raw_goals: str | None) -> list[str]:
+    if not raw_goals:
+        return []
+    try:
+        values = json.loads(raw_goals)
+    except json.JSONDecodeError:
+        return [goal.strip() for goal in raw_goals.split(",") if goal.strip()]
+    if not isinstance(values, list):
+        return []
+    return [str(goal) for goal in values if str(goal) in PORTFOLIO_GOAL_CHOICES]
+
+
+def _clean_option(value: str | None, choices: list[str]) -> str | None:
+    clean_value = (value or "").strip()
+    if not clean_value:
+        return None
+    if clean_value not in choices:
+        raise ValueError(f"Unsupported option '{clean_value}'.")
+    return clean_value
 
 
 def create_account(
@@ -122,6 +197,9 @@ def create_portfolio(
     portfolio_name: str,
     description: str = "",
     portfolio_url: str = "",
+    portfolio_goals: list[str] | str | None = None,
+    goal_type: str = "",
+    goal_timeline: str = "",
 ) -> str:
     account_id = parse_choice_id(account_choice)
     if account_id is None:
@@ -140,6 +218,9 @@ def create_portfolio(
             portfolio_name.strip(),
             description=description.strip() or None,
             portfolio_url=portfolio_url.strip() or None,
+            portfolio_goals=_serialize_goal_list(portfolio_goals),
+            goal_type=_clean_option(goal_type, PORTFOLIO_GOAL_TYPE_CHOICES),
+            goal_timeline=_clean_option(goal_timeline, PORTFOLIO_TIMELINE_CHOICES),
         )
         session.commit()
 
@@ -303,20 +384,27 @@ def update_account(
     return f"Updated account '{account.name}' ({status})."
 
 
-def portfolio_details(portfolio_choice: str | int | None) -> tuple[str, str, str, bool]:
+def portfolio_details(
+    portfolio_choice: str | int | None,
+) -> tuple[str, str, str, list[str], str, str, str, str, bool]:
     portfolio_id = parse_choice_id(portfolio_choice)
     if portfolio_id is None:
-        return "", "", "", True
+        return "", "", "", [], "", "", "", "", True
 
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolio = session.get(Portfolio, portfolio_id)
         if portfolio is None:
-            return "", "", "", True
+            return "", "", "", [], "", "", "", "", True
         return (
             portfolio.name,
             portfolio.description or "",
             portfolio.portfolio_url or "",
+            _deserialize_goal_list(portfolio.portfolio_goals),
+            portfolio.goal_type or "",
+            portfolio.goal_timeline or "",
+            portfolio.rewritten_goals or "",
+            portfolio.strategy_recommendation or "",
             bool(portfolio.is_active),
         )
 
@@ -326,6 +414,9 @@ def update_portfolio(
     portfolio_name: str,
     description: str,
     portfolio_url: str,
+    portfolio_goals: list[str] | str | None,
+    goal_type: str,
+    goal_timeline: str,
     is_active: bool,
 ) -> str:
     portfolio_id = parse_choice_id(portfolio_choice)
@@ -357,6 +448,9 @@ def update_portfolio(
         portfolio.name = clean_name
         portfolio.description = (description or "").strip() or None
         portfolio.portfolio_url = (portfolio_url or "").strip() or None
+        portfolio.portfolio_goals = _serialize_goal_list(portfolio_goals)
+        portfolio.goal_type = _clean_option(goal_type, PORTFOLIO_GOAL_TYPE_CHOICES)
+        portfolio.goal_timeline = _clean_option(goal_timeline, PORTFOLIO_TIMELINE_CHOICES)
         portfolio.is_active = bool(is_active)
         session.commit()
 
@@ -413,6 +507,9 @@ def get_or_create_portfolio(
     name: str = DEFAULT_PORTFOLIO_NAME,
     description: str | None = None,
     portfolio_url: str | None = None,
+    portfolio_goals: str | None = None,
+    goal_type: str | None = None,
+    goal_timeline: str | None = None,
     is_active: bool = True,
 ) -> Portfolio:
     portfolio = session.scalar(
@@ -424,6 +521,9 @@ def get_or_create_portfolio(
             name=name,
             description=description,
             portfolio_url=portfolio_url,
+            portfolio_goals=portfolio_goals,
+            goal_type=goal_type,
+            goal_timeline=goal_timeline,
             is_active=is_active,
         )
         session.add(portfolio)
@@ -433,6 +533,12 @@ def get_or_create_portfolio(
             portfolio.description = description
         if portfolio_url and not portfolio.portfolio_url:
             portfolio.portfolio_url = portfolio_url
+        if portfolio_goals and not portfolio.portfolio_goals:
+            portfolio.portfolio_goals = portfolio_goals
+        if goal_type and not portfolio.goal_type:
+            portfolio.goal_type = goal_type
+        if goal_timeline and not portfolio.goal_timeline:
+            portfolio.goal_timeline = goal_timeline
     return portfolio
 
 
@@ -550,6 +656,11 @@ def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
                 "Portfolio": portfolio.name,
                 "Portfolio URL": portfolio.portfolio_url or "",
                 "Description": portfolio.description or "",
+                "Goals": ", ".join(_deserialize_goal_list(portfolio.portfolio_goals)),
+                "Goal Type": portfolio.goal_type or "",
+                "Timeline": portfolio.goal_timeline or "",
+                "Rewritten Goals": portfolio.rewritten_goals or "",
+                "Strategy Recommendation": portfolio.strategy_recommendation or "",
                 "Currency": account.currency_code,
                 "Simulated Account": "Yes" if account.is_simulated else "No",
                 "Active": "Yes" if portfolio.is_active else "No",
@@ -563,11 +674,37 @@ def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
             "Portfolio",
             "Portfolio URL",
             "Description",
+            "Goals",
+            "Goal Type",
+            "Timeline",
+            "Rewritten Goals",
+            "Strategy Recommendation",
             "Currency",
             "Simulated Account",
             "Active",
         ],
     )
+
+
+def store_portfolio_recommendation(
+    portfolio_choice: str | int | None,
+    rewritten_goals: str,
+    strategy_recommendation: str,
+) -> str:
+    portfolio_id = parse_choice_id(portfolio_choice)
+    if portfolio_id is None:
+        raise ValueError("Portfolio is required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio = session.get(Portfolio, portfolio_id)
+        if portfolio is None:
+            raise ValueError(f"Portfolio id {portfolio_id} does not exist.")
+        portfolio.rewritten_goals = (rewritten_goals or "").strip() or None
+        portfolio.strategy_recommendation = (strategy_recommendation or "").strip() or None
+        session.commit()
+
+    return f"Stored LLM recommendation for portfolio '{portfolio.name}'."
 
 
 def portfolio_choices_for_account(

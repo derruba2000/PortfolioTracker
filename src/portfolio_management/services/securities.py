@@ -24,12 +24,41 @@ YAHOO_DETAIL_TABLES = {
     "option_contracts": "yahoo_option_contracts",
 }
 
+ASSET_SUBCLASS_CHOICES = [
+    "STOCK",
+    "BOND",
+    "CRYPTO",
+    "REAL ESTATE",
+    "GOLD",
+    "COMMODITY",
+    "CASH",
+    "ETF 100% EQUITY",
+    "ETF 70% EQUITY 30% BOND",
+    "ETF 50% EQUITY 50% BOND",
+    "ETF 30% EQUITY 70% BOND",
+    "ETF 100% BOND",
+    "ETF 100% CRYPTO",
+    "ETF 100% REAL ESTATE",
+    "ETF 100% GOLD",
+    "ETF 70% EQUITY 30% CRYPTO",
+    "ETF 70% EQUITY 30% REAL ESTATE",
+    "ETF 70% EQUITY 30% GOLD",
+    "ETF 60% EQUITY 30% BOND 10% CRYPTO",
+    "ETF 60% EQUITY 30% BOND 10% REAL ESTATE",
+    "ETF 60% EQUITY 30% BOND 10% GOLD",
+]
+
+
+def list_asset_subclass_choices() -> list[str]:
+    return ASSET_SUBCLASS_CHOICES.copy()
+
 
 def create_security(
     ticker: str,
     description: str,
     asset_class: str,
     currency_code: str,
+    asset_subclass: str = "STOCK",
 ) -> str:
     clean_ticker = (ticker or "").strip().upper()
     if not clean_ticker:
@@ -40,6 +69,9 @@ def create_security(
     if not is_known_asset_class(clean_asset_class):
         raise ValueError("Asset class must be selected from the database list.")
     asset_class_value = AssetClass(clean_asset_class)
+    clean_asset_subclass = (asset_subclass or "").strip().upper()
+    if clean_asset_subclass not in ASSET_SUBCLASS_CHOICES:
+        raise ValueError("Asset subclass must be selected from the list.")
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -51,6 +83,7 @@ def create_security(
                 name=clean_description or clean_ticker,
                 description=clean_description,
                 asset_class=asset_class_value,
+                asset_subclass=clean_asset_subclass,
                 currency_code=normalized_currency,
             )
             session.add(security)
@@ -58,6 +91,7 @@ def create_security(
             security.name = clean_description or security.name
             security.description = clean_description
             security.asset_class = asset_class_value
+            security.asset_subclass = clean_asset_subclass
             security.currency_code = normalized_currency
         session.commit()
 
@@ -75,11 +109,12 @@ def list_securities() -> pd.DataFrame:
                 "Ticker": security.ticker,
                 "Description": security.description or security.name,
                 "Asset Class": security.asset_class.value,
+                "Asset Subclass": security.asset_subclass,
                 "Currency": security.currency_code,
             }
             for security in rows
         ],
-        columns=["Ticker", "Description", "Asset Class", "Currency"],
+        columns=["Ticker", "Description", "Asset Class", "Asset Subclass", "Currency"],
     )
 
 
@@ -88,6 +123,45 @@ def list_security_tickers() -> list[str]:
     with session_factory() as session:
         tickers = session.scalars(select(Security.ticker).order_by(Security.ticker)).all()
     return list(tickers)
+
+
+def security_form_values(
+    ticker: str,
+    current_description: str,
+    current_asset_class: str,
+    current_asset_subclass: str,
+    current_currency: str,
+) -> tuple[str, str, str, str, str]:
+    clean_ticker = (ticker or "").strip().upper()
+    if not clean_ticker:
+        return (
+            current_description,
+            current_asset_class,
+            current_asset_subclass,
+            current_currency,
+            "",
+        )
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        security = session.scalar(select(Security).where(Security.ticker == clean_ticker))
+
+    if security is None:
+        return (
+            current_description,
+            current_asset_class,
+            current_asset_subclass,
+            current_currency,
+            f"No existing security found for '{clean_ticker}'.",
+        )
+
+    return (
+        security.description or security.name,
+        security.asset_class.value,
+        security.asset_subclass or "STOCK",
+        security.currency_code,
+        f"Loaded security '{clean_ticker}'.",
+    )
 
 
 def security_detail_symbols() -> list[str]:

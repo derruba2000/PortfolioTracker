@@ -11,7 +11,9 @@ from portfolio_management.services.reference_data import (
 )
 from portfolio_management.services.securities import (
     create_security,
+    list_asset_subclass_choices,
     list_securities,
+    security_form_values,
     security_detail_symbols,
     yahoo_security_details,
 )
@@ -54,6 +56,7 @@ def _create_security(
     ticker: str,
     description: str,
     asset_class: str,
+    asset_subclass: str,
     currency_code: str,
 ) -> tuple[str, object, object]:
     try:
@@ -61,6 +64,7 @@ def _create_security(
             ticker=ticker,
             description=description,
             asset_class=asset_class,
+            asset_subclass=asset_subclass,
             currency_code=currency_code,
         )
     except Exception as exc:
@@ -123,6 +127,13 @@ def build_securities_tab() -> dict[str, Any]:
                 value="EQUITY",
                 allow_custom_value=True,
             )
+            security_asset_subclass = gr.Dropdown(
+                label="Asset Subclass",
+                choices=list_asset_subclass_choices(),
+                value="STOCK",
+                allow_custom_value=False,
+                filterable=True,
+            )
             security_currency = gr.Dropdown(
                 label="Currency",
                 choices=list_currency_codes(),
@@ -132,8 +143,8 @@ def build_securities_tab() -> dict[str, Any]:
         add_security_button = gr.Button("Save Security", variant="primary")
         securities_table = gr.Dataframe(
             value=securities_table_data,
-            headers=["Ticker", "Description", "Asset Class", "Currency"],
-            datatype=["markdown", "str", "str", "str"],
+            headers=["Ticker", "Description", "Asset Class", "Asset Subclass", "Currency"],
+            datatype=["markdown", "str", "str", "str", "str"],
             label="Securities",
             interactive=False,
         )
@@ -287,12 +298,30 @@ def build_securities_tab() -> dict[str, Any]:
         ]
         refresh_securities_button = gr.Button("Refresh Securities")
 
+        security_ticker.change(
+            fn=security_form_values,
+            inputs=[
+                security_ticker,
+                security_description,
+                security_asset_class,
+                security_asset_subclass,
+                security_currency,
+            ],
+            outputs=[
+                security_description,
+                security_asset_class,
+                security_asset_subclass,
+                security_currency,
+                securities_status,
+            ],
+        )
         add_security_button.click(
             fn=_create_security,
             inputs=[
                 security_ticker,
                 security_description,
                 security_asset_class,
+                security_asset_subclass,
                 security_currency,
             ],
             outputs=[

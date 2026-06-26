@@ -13,13 +13,12 @@ from portfolio_management.db.session import get_session_factory
 DEFAULT_ASSET_CLASSES = [
     ("CASH", "Cash", 0),
     ("EQUITY", "Equity", 1),
-    ("ETF", "ETF", 2),
-    ("BOND", "Bond", 3),
-    ("FUND", "Fund", 4),
-    ("CRYPTO", "Crypto", 5),
-    ("REAL_ESTATE", "Real Estate", 6),
-    ("COMMODITY", "Commodity", 7),
-    ("OTHER", "Other", 8),
+    ("BOND", "Bond", 2),
+    ("FUND", "Fund", 3),
+    ("CRYPTO", "Crypto", 4),
+    ("REAL_ESTATE", "Real Estate", 5),
+    ("COMMODITY", "Commodity", 6),
+    ("OTHER", "Other", 7),
 ]
 
 DEFAULT_CURRENCIES = [
@@ -47,6 +46,10 @@ DEFAULT_CURRENCIES = [
 
 
 def seed_reference_data(session: Session) -> None:
+    stale_etf = session.get(AssetClassOption, "ETF")
+    if stale_etf is not None:
+        session.delete(stale_etf)
+
     for code, name, display_order in DEFAULT_ASSET_CLASSES:
         if session.scalar(select(AssetClassOption).where(AssetClassOption.code == code)) is None:
             session.add(AssetClassOption(code=code, name=name, display_order=display_order))

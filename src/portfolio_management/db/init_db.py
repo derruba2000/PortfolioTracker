@@ -84,6 +84,16 @@ def migrate_sqlite_schema(engine: object) -> None:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN description VARCHAR(1000)"))
         if portfolio_columns and "portfolio_url" not in portfolio_columns:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN portfolio_url VARCHAR(2000)"))
+        if portfolio_columns and "portfolio_goals" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN portfolio_goals TEXT"))
+        if portfolio_columns and "goal_type" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN goal_type VARCHAR(64)"))
+        if portfolio_columns and "goal_timeline" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN goal_timeline VARCHAR(64)"))
+        if portfolio_columns and "rewritten_goals" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN rewritten_goals TEXT"))
+        if portfolio_columns and "strategy_recommendation" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN strategy_recommendation TEXT"))
         if portfolio_columns and "is_active" not in portfolio_columns:
             connection.execute(
                 text("ALTER TABLE portfolios ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
@@ -95,6 +105,34 @@ def migrate_sqlite_schema(engine: object) -> None:
         }
         if security_columns and "description" not in security_columns:
             connection.execute(text("ALTER TABLE securities ADD COLUMN description VARCHAR(1000)"))
+        if security_columns and "asset_subclass" not in security_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE securities "
+                    "ADD COLUMN asset_subclass VARCHAR(64) NOT NULL DEFAULT 'STOCK'"
+                )
+            )
+            security_columns.add("asset_subclass")
+            connection.execute(
+                text(
+                    """
+                    UPDATE securities
+                    SET asset_subclass = CASE asset_class
+                        WHEN 'BOND' THEN 'BOND'
+                        WHEN 'ETF' THEN 'ETF 100% EQUITY'
+                        WHEN 'CRYPTO' THEN 'CRYPTO'
+                        WHEN 'REAL_ESTATE' THEN 'REAL ESTATE'
+                        WHEN 'COMMODITY' THEN 'COMMODITY'
+                        WHEN 'CASH' THEN 'CASH'
+                        ELSE 'STOCK'
+                    END
+                    """
+                )
+            )
+        if security_columns and "asset_class" in security_columns:
+            connection.execute(
+                text("UPDATE securities SET asset_class = 'EQUITY' WHERE asset_class = 'ETF'")
+            )
 
         reference_tables = {
             row[0]
@@ -115,6 +153,8 @@ def migrate_sqlite_schema(engine: object) -> None:
                     """
                 )
             )
+        else:
+            connection.execute(text("DELETE FROM asset_classes WHERE code = 'ETF'"))
         if "currencies" not in reference_tables:
             connection.execute(
                 text(

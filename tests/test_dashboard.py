@@ -37,7 +37,7 @@ def _positions() -> pd.DataFrame:
                 "Portfolio URL": "",
                 "Ticker": "BBB",
                 "Name": "Beta",
-                "Asset Class": "ETF",
+                "Asset Class": "BOND",
                 "Currency": "USD",
                 "Reporting Currency": "GBP",
                 "Quantity": "5",
@@ -81,7 +81,7 @@ def test_dashboard_position_filter_choices_include_all_options(monkeypatch) -> N
 
     assert account_choices == [ALL_POSITION_ACCOUNTS, "ISA", "Trading"]
     assert portfolio_choices == [ALL_POSITION_PORTFOLIOS, "Core", "Income"]
-    assert asset_class_choices == [ALL_ASSET_CLASSES, "EQUITY", "ETF"]
+    assert asset_class_choices == [ALL_ASSET_CLASSES, "BOND", "EQUITY"]
 
 
 def test_dashboard_position_filter_choices_cascade(monkeypatch) -> None:
@@ -90,7 +90,7 @@ def test_dashboard_position_filter_choices_cascade(monkeypatch) -> None:
         **positions.loc[0].to_dict(),
         "Portfolio": "Growth",
         "Ticker": "CCC",
-        "Asset Class": "ETF",
+        "Asset Class": "BOND",
     }
     monkeypatch.setattr(
         "portfolio_management.tabs.dashboard.current_positions",
@@ -110,7 +110,7 @@ def test_dashboard_position_filter_choices_cascade(monkeypatch) -> None:
     )
 
     assert portfolio_choices == [ALL_POSITION_PORTFOLIOS, "Core", "Growth"]
-    assert account_asset_classes == [ALL_ASSET_CLASSES, "EQUITY", "ETF"]
+    assert account_asset_classes == [ALL_ASSET_CLASSES, "BOND", "EQUITY"]
     assert portfolio_asset_classes == [ALL_ASSET_CLASSES, "EQUITY"]
 
 

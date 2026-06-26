@@ -49,7 +49,7 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
             description="Initial allocation",
             ticker="VWCE",
             security_name="Vanguard FTSE All-World UCITS ETF",
-            asset_class=AssetClass.ETF,
+            asset_class=AssetClass.EQUITY,
             security_currency_code="EUR",
             quantity=2,
             price=Decimal("100.25"),
@@ -70,7 +70,7 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     assert transaction.portfolio.name == "Default Portfolio"
     assert transaction.description == "Initial allocation"
     assert security is not None
-    assert security.asset_class == AssetClass.ETF
+    assert security.asset_class == AssetClass.EQUITY
     assert transaction.total_value == Decimal("202")
 
 
@@ -162,14 +162,14 @@ def test_transaction_input_from_mapping_normalizes_aliases() -> None:
             "Shares": "2",
             "Price": "500.00",
             "Fee": "0.25",
-            "Asset Class": "ETF",
+            "Asset Class": "BOND",
         }
     )
 
     assert transaction_input.ticker == "SPY"
     assert transaction_input.transaction_type == TransactionType.BUY
     assert transaction_input.quantity == 2
-    assert transaction_input.asset_class == AssetClass.ETF
+    assert transaction_input.asset_class == AssetClass.BOND
 
 
 def test_transaction_input_rejects_fractional_quantity() -> None:
