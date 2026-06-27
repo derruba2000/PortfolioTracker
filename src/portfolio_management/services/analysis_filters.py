@@ -13,6 +13,13 @@ from portfolio_management.services.analytics import (
 
 ALL_PORTFOLIOS = "All Portfolios"
 ACCOUNT_SCOPE_CHOICES = [LIVE_MODE, SANDBOX_MODE, ALL_ACCOUNTS_MODE]
+APP_ACCOUNT_MODE_CHOICES = [LIVE_MODE, SANDBOX_MODE]
+
+
+def account_mode_to_table_filter(account_mode: str) -> str:
+    if account_mode == SANDBOX_MODE:
+        return "Test"
+    return "Real"
 
 
 def portfolio_filter_choices(account_mode: str) -> list[str]:

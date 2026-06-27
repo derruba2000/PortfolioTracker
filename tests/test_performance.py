@@ -33,8 +33,9 @@ from portfolio_management.services.performance import (
     historical_stress_tests,
     risk_metrics,
 )
+from portfolio_management.services.analysis_filters import APP_ACCOUNT_MODE_CHOICES
+from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE
 from portfolio_management.tabs.performance import (
-    ACCOUNT_SCOPE_FILTER_CHOICES,
     _portfolio_value_figure,
 )
 
@@ -342,9 +343,5 @@ def test_portfolio_value_figure_formats_currency_and_drill_down_name() -> None:
     assert list(figure.data[0].y) == [1000.0, 1100.0]
 
 
-def test_performance_environment_filters_expose_production_test_and_all() -> None:
-    assert [label for label, _ in ACCOUNT_SCOPE_FILTER_CHOICES] == [
-        "Production",
-        "Test",
-        "All",
-    ]
+def test_app_mode_filter_exposes_live_and_test_only() -> None:
+    assert APP_ACCOUNT_MODE_CHOICES == [LIVE_MODE, SANDBOX_MODE]

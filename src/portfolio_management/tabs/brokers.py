@@ -137,4 +137,10 @@ def build_brokers_tab() -> dict[str, Any]:
             outputs=[brokers_table],
         )
 
-    return {"brokers_table": brokers_table}
+    return {
+        "brokers_table": brokers_table,
+        "create_broker_button": create_broker_button,
+        "update_broker_button": update_broker_button,
+        "delete_broker_button": delete_broker_button,
+        "refresh_brokers_button": refresh_brokers_button,
+    }

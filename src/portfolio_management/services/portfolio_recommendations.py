@@ -13,16 +13,6 @@ from portfolio_management.db.session import get_engine, get_session_factory
 from portfolio_management.services.accounts import portfolio_details, store_portfolio_recommendation
 
 
-OLLAMA_QUESTIONS = """Please answer these questions, then click Get LLM Recommendation:
-
-1. What is the main objective for this portfolio?
-2. When do you expect to use the money?
-3. How would you describe your risk tolerance?
-4. What drawdown would make you uncomfortable?
-5. Do you prefer income, growth, capital preservation, or a mix?
-6. Are there assets, sectors, currencies, or regions you want to avoid or prefer?
-"""
-
 YAHOO_CONTEXT_TABLES = {
     "analyst_targets": "yahoo_analyst_targets",
     "calendar_events": "yahoo_calendar_events",
@@ -38,8 +28,26 @@ YAHOO_CONTEXT_TABLES = {
 }
 
 
-def start_portfolio_goal_conversation() -> str:
-    return OLLAMA_QUESTIONS
+def start_portfolio_goal_conversation(portfolio_choice: str | int | None = None) -> str:
+    name, description, _url, goals, goal_type, timeline, _rewritten, _recommendation, active = (
+        portfolio_details(portfolio_choice)
+    )
+    if not name:
+        return "Select or save a portfolio first. Optional notes can include risk tolerance, drawdown limits, sectors to avoid, or currency preferences."
+
+    goals_text = ", ".join(goals) if goals else "None"
+    active_text = "Yes" if active else "No"
+    return f"""Saved portfolio profile:
+Name: {name}
+Active: {active_text}
+Description: {description or "None"}
+Goals: {goals_text}
+Goal type: {goal_type or "None"}
+Timeline: {timeline or "None"}
+
+Optional notes:
+Add anything not already captured above, such as risk tolerance, drawdown limits, sectors to avoid, or currency preferences. Otherwise click Get LLM Recommendation using the saved profile.
+"""
 
 
 def generate_and_store_portfolio_recommendation(
@@ -49,7 +57,14 @@ def generate_and_store_portfolio_recommendation(
 ) -> tuple[str, str, str]:
     clean_answers = (user_answers or "").strip()
     if not clean_answers:
-        raise ValueError("Answer the LLM questions before requesting a recommendation.")
+        name, description, _url, goals, goal_type, timeline, *_rest = portfolio_details(
+            portfolio_choice
+        )
+        if not any([description, goals, goal_type, timeline]):
+            raise ValueError(
+                "Add a portfolio description, goals, goal type, or timeline before requesting a recommendation."
+            )
+        clean_answers = f"Use the saved portfolio profile for {name or 'this portfolio'}."
 
     prompt = _build_prompt(portfolio_choice, clean_answers)
     recommendation = _call_ollama(prompt, post=post)

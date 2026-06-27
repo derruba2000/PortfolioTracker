@@ -8,7 +8,6 @@ import gradio as gr
 
 from portfolio_management.config import load_settings, save_settings
 from portfolio_management.services.analysis_filters import (
-    ACCOUNT_SCOPE_CHOICES,
     ALL_PORTFOLIOS,
     parse_portfolio_filter,
     portfolio_filter_choices,
@@ -198,7 +197,7 @@ def _export_portfolio_time_series(
     )
 
 
-def build_export_tab() -> dict[str, Any]:
+def build_export_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
     settings = load_settings()
     default_path = str(settings.export_symbols_csv_path) if settings.export_symbols_csv_path else ""
 
@@ -237,11 +236,6 @@ def build_export_tab() -> dict[str, Any]:
                     "CSV values are not formatted as dashboard links or display strings."
                 )
                 with gr.Row():
-                    export_account_scope = gr.Radio(
-                        label="Account Scope",
-                        choices=ACCOUNT_SCOPE_CHOICES,
-                        value=LIVE_MODE,
-                    )
                     export_portfolio_filter = gr.Dropdown(
                         label="Portfolio",
                         choices=portfolio_filter_choices(LIVE_MODE),
@@ -302,15 +296,10 @@ def build_export_tab() -> dict[str, Any]:
                         interactive=False,
                     )
 
-                export_account_scope.change(
-                    fn=_export_scope_changed,
-                    inputs=[export_account_scope],
-                    outputs=[export_portfolio_filter],
-                )
                 export_positions_button.click(
                     fn=_export_positions,
                     inputs=[
-                        export_account_scope,
+                        mode_toggle,
                         export_portfolio_filter,
                         export_reporting_currency,
                     ],
@@ -318,13 +307,13 @@ def build_export_tab() -> dict[str, Any]:
                 )
                 export_transactions_button.click(
                     fn=_export_transactions,
-                    inputs=[export_account_scope, export_portfolio_filter],
+                    inputs=[mode_toggle, export_portfolio_filter],
                     outputs=[transactions_csv_file],
                 )
                 export_kpis_button.click(
                     fn=_export_portfolio_kpis,
                     inputs=[
-                        export_account_scope,
+                        mode_toggle,
                         export_portfolio_filter,
                         export_reporting_currency,
                         export_risk_free_rate,
@@ -333,13 +322,13 @@ def build_export_tab() -> dict[str, Any]:
                 )
                 export_correlations_button.click(
                     fn=_export_portfolio_correlations,
-                    inputs=[export_account_scope, export_portfolio_filter],
+                    inputs=[mode_toggle, export_portfolio_filter],
                     outputs=[correlations_csv_file],
                 )
                 export_time_series_button.click(
                     fn=_export_portfolio_time_series,
                     inputs=[
-                        export_account_scope,
+                        mode_toggle,
                         export_portfolio_filter,
                         export_reporting_currency,
                     ],
@@ -384,7 +373,6 @@ def build_export_tab() -> dict[str, Any]:
     return {
         "csv_path_input": csv_path_input,
         "export_status": export_status,
-        "export_account_scope": export_account_scope,
         "export_portfolio_filter": export_portfolio_filter,
         "positions_csv_file": positions_csv_file,
         "transactions_csv_file": transactions_csv_file,

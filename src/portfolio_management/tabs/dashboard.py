@@ -11,7 +11,6 @@ from portfolio_management.services.analytics import (
     dashboard_summary,
 )
 from portfolio_management.services.analysis_filters import (
-    ACCOUNT_SCOPE_CHOICES,
     ALL_PORTFOLIOS,
     parse_portfolio_filter,
     portfolio_filter_choices,
@@ -289,11 +288,6 @@ def build_dashboard_tab() -> dict[str, Any]:
     )
     with gr.Tab("Dashboard"):
         with gr.Row():
-            mode_toggle = gr.Radio(
-                label="Account Scope",
-                choices=ACCOUNT_SCOPE_CHOICES,
-                value=LIVE_MODE,
-            )
             portfolio_filter = gr.Dropdown(
                 label="Dashboard Portfolio Scope",
                 choices=portfolio_filter_choices(LIVE_MODE),
@@ -375,7 +369,6 @@ def build_dashboard_tab() -> dict[str, Any]:
         refresh_dashboard_button = gr.Button("Refresh Dashboard")
 
     return {
-        "mode_toggle": mode_toggle,
         "reporting_currency": reporting_currency,
         "portfolio_filter": portfolio_filter,
         "positions_account_filter": positions_account_filter,

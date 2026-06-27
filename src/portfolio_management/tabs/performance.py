@@ -9,9 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from portfolio_management.services.analytics import (
-    ALL_ACCOUNTS_MODE,
     LIVE_MODE,
-    SANDBOX_MODE,
 )
 from portfolio_management.services.analysis_filters import (
     ALL_PORTFOLIOS,
@@ -35,11 +33,6 @@ from portfolio_management.services.performance import (
 )
 
 REPORTING_CURRENCIES = ["GBP", "EUR", "USD"]
-ACCOUNT_SCOPE_FILTER_CHOICES = [
-    ("Production", LIVE_MODE),
-    ("Test", SANDBOX_MODE),
-    ("All", ALL_ACCOUNTS_MODE),
-]
 
 
 def _refresh_performance(account_mode: str) -> object:
@@ -116,16 +109,11 @@ def refresh_performance_analysis(
     )
 
 
-def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
+def build_performance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
     selected_benchmark = default_benchmark_choice()
 
     with gr.Tab("Performance"):
         with gr.Row():
-            account_scope = gr.Radio(
-                label="Environment",
-                choices=ACCOUNT_SCOPE_FILTER_CHOICES,
-                value=LIVE_MODE,
-            )
             portfolio_filter = gr.Dropdown(
                 label="Portfolio",
                 choices=portfolio_filter_choices(LIVE_MODE),
@@ -207,7 +195,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
             fn=refresh_performance_analysis,
             inputs=[
                 benchmark_choice,
-                account_scope,
+                mode_toggle,
                 portfolio_filter,
                 reporting_currency,
                 risk_free_rate,
@@ -227,7 +215,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
             fn=refresh_performance_analysis,
             inputs=[
                 benchmark_choice,
-                account_scope,
+                mode_toggle,
                 portfolio_filter,
                 reporting_currency,
                 risk_free_rate,
@@ -247,32 +235,12 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
             fn=refresh_performance_analysis,
             inputs=[
                 benchmark_choice,
-                account_scope,
+                mode_toggle,
                 portfolio_filter,
                 reporting_currency,
                 risk_free_rate,
             ],
             outputs=[
-                portfolio_value_plot,
-                performance_plot,
-                drawdown_plot,
-                risk_metrics_table,
-                benchmark_plot,
-                benchmark_metrics_table,
-                correlation_plot,
-                stress_plot,
-            ],
-        )
-        account_scope.change(
-            fn=refresh_performance_for_mode,
-            inputs=[
-                account_scope,
-                benchmark_choice,
-                reporting_currency,
-                risk_free_rate,
-            ],
-            outputs=[
-                portfolio_filter,
                 portfolio_value_plot,
                 performance_plot,
                 drawdown_plot,
@@ -287,7 +255,7 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
             fn=refresh_performance_analysis,
             inputs=[
                 benchmark_choice,
-                account_scope,
+                mode_toggle,
                 portfolio_filter,
                 reporting_currency,
                 risk_free_rate,
@@ -305,7 +273,9 @@ def build_performance_tab(_mode_toggle: gr.Radio) -> dict[str, Any]:
         )
 
     return {
-        "account_scope": account_scope,
+        "benchmark_choice": benchmark_choice,
+        "reporting_currency": reporting_currency,
+        "risk_free_rate": risk_free_rate,
         "portfolio_filter": portfolio_filter,
         "portfolio_value_plot": portfolio_value_plot,
         "performance_plot": performance_plot,

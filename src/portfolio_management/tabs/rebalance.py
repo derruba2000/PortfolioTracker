@@ -45,6 +45,21 @@ def _saved_target_update(account_choice: str, selected_asset_class: str | None =
     return gr.update(choices=choices, value=value)
 
 
+def _rebalance_accounts_for_mode(account_mode: str) -> list[str]:
+    return account_choices(include_simulated=True, account_mode=account_mode)
+
+
+def _rebalance_mode_changed(account_mode: str) -> tuple[Any, ...]:
+    accounts = _rebalance_accounts_for_mode(account_mode)
+    selected_account = accounts[0] if accounts else None
+    return (
+        gr.update(choices=accounts, value=selected_account),
+        _saved_target_update(selected_account),
+        _formatted_target_allocations(selected_account),
+        rebalance_positions(selected_account, account_mode=account_mode),
+    )
+
+
 def _set_target_allocation(
     account_choice: str,
     asset_class: str,
@@ -111,14 +126,18 @@ def _refresh_rebalance(account_choice: str, account_mode: str) -> tuple[Any, ...
 
 
 def build_rebalance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
-    selected_rebalance_account = default_rebalance_account_choice()
+    selected_rebalance_account = (
+        _rebalance_accounts_for_mode(LIVE_MODE)[0]
+        if _rebalance_accounts_for_mode(LIVE_MODE)
+        else default_rebalance_account_choice()
+    )
 
     with gr.Tab("Rebalance"):
         rebalance_status = gr.Textbox(label="Status", interactive=False)
         with gr.Row():
             rebalance_account = gr.Dropdown(
                 label="Account",
-                choices=account_choices(include_simulated=True),
+                choices=_rebalance_accounts_for_mode(LIVE_MODE),
                 value=selected_rebalance_account,
             )
             saved_target = gr.Dropdown(
@@ -179,4 +198,9 @@ def build_rebalance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
             outputs=[target_allocations_table, rebalance_table, saved_target],
         )
 
-    return {}
+    return {
+        "rebalance_account": rebalance_account,
+        "saved_target": saved_target,
+        "target_allocations_table": target_allocations_table,
+        "rebalance_table": rebalance_table,
+    }

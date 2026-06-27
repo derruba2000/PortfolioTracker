@@ -17,7 +17,8 @@ from portfolio_management.services.accounts import (
     portfolio_timeline_choices,
     update_portfolio,
 )
-from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, current_positions
+from portfolio_management.services.analysis_filters import account_mode_to_table_filter
+from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, LIVE_MODE, current_positions
 from portfolio_management.services.portfolio_recommendations import (
     generate_and_store_portfolio_recommendation,
     start_portfolio_goal_conversation,
@@ -41,9 +42,10 @@ def create_portfolio_callback(
     portfolio_goals: list[str] | None,
     goal_type: str,
     goal_timeline: str,
-    portfolios_filter: str = "All",
+    account_mode: str = LIVE_MODE,
     portfolio_view_choice: str | int | None = None,
 ) -> tuple[Any, ...]:
+    portfolios_filter = account_mode_to_table_filter(account_mode)
     try:
         status = create_portfolio(
             account_choice=account_choice,
@@ -55,24 +57,24 @@ def create_portfolio_callback(
             goal_timeline=goal_timeline,
         )
     except Exception as exc:
-        choices = portfolio_view_choices(portfolios_filter)
+        choices = portfolio_view_choices_for_mode(account_mode)
         return (
             f"Could not create portfolio: {exc}",
             gr.update(),
             gr.update(),
             gr.update(),
             gr.update(choices=choices, value=portfolio_view_choice),
-            portfolios_table_data(portfolios_filter, portfolio_view_choice),
+            portfolios_table_data(account_mode, portfolio_view_choice),
             portfolio_assets_table_data(portfolio_view_choice),
         )
 
-    accounts = account_choices(include_simulated=True)
+    accounts = account_choices(include_simulated=True, account_mode=account_mode)
     portfolios = portfolio_choices_for_account(account_choice)
     selected_portfolio = next(
         (choice for choice in portfolios if f"| {portfolio_name}" in choice),
         portfolios[0] if portfolios else None,
     )
-    choices = portfolio_view_choices(portfolios_filter)
+    choices = portfolio_view_choices_for_mode(account_mode)
     selected_view = _portfolio_view_choice_for_id(
         choices,
         parse_choice_id(selected_portfolio),
@@ -83,17 +85,103 @@ def create_portfolio_callback(
         gr.update(choices=accounts, value=account_choice),
         gr.update(choices=portfolios, value=selected_portfolio),
         gr.update(choices=choices, value=selected_view),
-        portfolios_table_data(portfolios_filter, selected_view),
+        portfolios_table_data(account_mode, selected_view),
         portfolio_assets_table_data(selected_view),
     )
 
 
-def _load_portfolio_details(portfolio_choice: str) -> tuple[Any, ...]:
-    return portfolio_details(portfolio_choice)
+def _portfolio_name_from_choice(portfolio_choice: str | int | None) -> str:
+    if portfolio_choice in (None, "", ALL_MASTER_PORTFOLIOS):
+        return ""
+    raw_name = str(portfolio_choice).split("|", maxsplit=1)[-1].strip()
+    return raw_name.removesuffix(" [DISABLED]").strip()
 
 
-def _update_portfolio_callback(
-    portfolio_choice: str,
+def _portfolio_name_choices_for_account(account_choice: str | int | None) -> list[str]:
+    return [
+        _portfolio_name_from_choice(choice)
+        for choice in portfolio_choices_for_account(account_choice, include_inactive=True)
+    ]
+
+
+def _portfolio_choice_for_name(
+    account_choice: str | int | None,
+    portfolio_name: str | None,
+) -> str | None:
+    clean_name = (portfolio_name or "").strip()
+    if not clean_name:
+        return None
+    for choice in portfolio_choices_for_account(account_choice, include_inactive=True):
+        if _portfolio_name_from_choice(choice) == clean_name:
+            return choice
+    return None
+
+
+def _portfolio_form_details(portfolio_choice: str | int | None) -> tuple[Any, ...]:
+    name, description, url, goals, goal_type, timeline, rewritten, recommendation, active = (
+        portfolio_details(portfolio_choice)
+    )
+    return (
+        gr.update(value=name),
+        portfolio_choice,
+        description,
+        url,
+        goals,
+        goal_type,
+        timeline,
+        rewritten,
+        recommendation,
+        active,
+    )
+
+
+def _blank_portfolio_form() -> tuple[Any, ...]:
+    return (
+        gr.update(),
+        None,
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(value=""),
+        gr.update(value=""),
+        True,
+    )
+
+
+def _portfolio_account_changed(account_choice: str | int | None) -> tuple[Any, ...]:
+    names = _portfolio_name_choices_for_account(account_choice)
+    selected_name = names[0] if names else None
+    selected_choice = _portfolio_choice_for_name(account_choice, selected_name)
+    details = (
+        _portfolio_form_details(selected_choice)
+        if selected_choice
+        else _blank_portfolio_form()
+    )
+    return (
+        gr.update(choices=names, value=selected_name),
+        *details[1:],
+        start_portfolio_goal_conversation(selected_choice),
+    )
+
+
+def _portfolio_name_changed(
+    account_choice: str | int | None,
+    portfolio_name: str,
+) -> tuple[Any, ...]:
+    portfolio_choice = _portfolio_choice_for_name(account_choice, portfolio_name)
+    if portfolio_choice is None:
+        return (*_blank_portfolio_form()[1:], "Select or save a portfolio first.")
+    return (
+        *_portfolio_form_details(portfolio_choice)[1:],
+        start_portfolio_goal_conversation(portfolio_choice),
+    )
+
+
+def save_portfolio_callback(
+    portfolio_choice: str | int | None,
+    account_choice: str,
     portfolio_name: str,
     description: str,
     portfolio_url: str,
@@ -101,38 +189,64 @@ def _update_portfolio_callback(
     goal_type: str,
     goal_timeline: str,
     is_active: bool,
-    portfolios_filter: str = "All",
+    account_mode: str = LIVE_MODE,
     portfolio_view_choice: str | int | None = None,
 ) -> tuple[Any, ...]:
+    portfolio_id = parse_choice_id(portfolio_choice)
     try:
-        status = update_portfolio(
-            portfolio_choice=portfolio_choice,
-            portfolio_name=portfolio_name,
-            description=description,
-            portfolio_url=portfolio_url,
-            portfolio_goals=portfolio_goals,
-            goal_type=goal_type,
-            goal_timeline=goal_timeline,
-            is_active=is_active,
-        )
+        if portfolio_id is None:
+            status = create_portfolio(
+                account_choice=account_choice,
+                portfolio_name=portfolio_name,
+                description=description,
+                portfolio_url=portfolio_url,
+                portfolio_goals=portfolio_goals,
+                goal_type=goal_type,
+                goal_timeline=goal_timeline,
+            )
+        else:
+            status = update_portfolio(
+                portfolio_choice=portfolio_choice,
+                portfolio_name=portfolio_name,
+                description=description,
+                portfolio_url=portfolio_url,
+                portfolio_goals=portfolio_goals,
+                goal_type=goal_type,
+                goal_timeline=goal_timeline,
+                is_active=is_active,
+            )
     except Exception as exc:
-        status = f"Could not update portfolio: {exc}"
+        status = f"Could not save portfolio: {exc}"
 
-    choices = portfolio_view_choices(portfolios_filter)
+    names = _portfolio_name_choices_for_account(account_choice)
+    selected_choice = _portfolio_choice_for_name(account_choice, portfolio_name)
+    choices = portfolio_view_choices_for_mode(account_mode)
     selected_view = _portfolio_view_choice_for_id(
         choices,
-        _parse_portfolio_view_id(portfolio_view_choice),
+        parse_choice_id(selected_choice) or _parse_portfolio_view_id(portfolio_view_choice),
+    )
+    account_options = account_choices(include_simulated=True, account_mode=account_mode)
+    account_update = gr.update(choices=account_options, value=account_choice)
+    account_portfolios = portfolio_choices_for_account(account_choice)
+    selected_portfolio = selected_choice if selected_choice in account_portfolios else (
+        account_portfolios[0] if account_portfolios else None
     )
     return (
         status,
-        gr.update(),
+        account_update,
+        account_update,
+        gr.update(choices=account_portfolios, value=selected_portfolio),
+        gr.update(choices=names, value=portfolio_name),
+        selected_choice,
+        start_portfolio_goal_conversation(selected_choice),
         gr.update(choices=choices, value=selected_view),
-        portfolios_table_data(portfolios_filter, selected_view),
+        portfolios_table_data(account_mode, selected_view),
         portfolio_assets_table_data(selected_view),
     )
 
 
-def portfolio_view_choices(portfolios_filter: str = "All") -> list[str]:
+def portfolio_view_choices_for_mode(account_mode: str = LIVE_MODE) -> list[str]:
+    portfolios_filter = account_mode_to_table_filter(account_mode)
     portfolios = list_portfolios(portfolios_filter)
     choices = [ALL_MASTER_PORTFOLIOS]
     if not isinstance(portfolios, pd.DataFrame):
@@ -144,10 +258,23 @@ def portfolio_view_choices(portfolios_filter: str = "All") -> list[str]:
     return choices
 
 
+def portfolio_view_choices(account_filter: str = "Real") -> list[str]:
+    portfolios = list_portfolios(account_filter)
+    choices = [ALL_MASTER_PORTFOLIOS]
+    if not isinstance(portfolios, pd.DataFrame):
+        return choices
+    for _, row in portfolios.iterrows():
+        choices.append(
+            f"{row['ID']} | {row['Broker']} / {row['Account']} / {row['Portfolio']}"
+        )
+    return choices
+
+
 def portfolios_table_data(
-    portfolios_filter: str = "All",
+    account_mode: str = LIVE_MODE,
     portfolio_view_choice: str | int | None = None,
 ) -> object:
+    portfolios_filter = account_mode_to_table_filter(account_mode)
     portfolios = list_portfolios(portfolios_filter)
     portfolio_id = _parse_portfolio_view_id(portfolio_view_choice)
     if (
@@ -228,40 +355,68 @@ def _portfolio_view_choice_for_id(
     )
 
 
-def _portfolio_scope_changed(portfolios_filter: str) -> tuple[Any, ...]:
-    choices = portfolio_view_choices(portfolios_filter)
+def _portfolio_scope_changed(account_mode: str) -> tuple[Any, ...]:
+    choices = portfolio_view_choices_for_mode(account_mode)
     return (
         gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
-        portfolios_table_data(portfolios_filter, ALL_MASTER_PORTFOLIOS),
+        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS),
+        portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
+    )
+
+
+def portfolios_mode_changed(account_mode: str) -> tuple[Any, ...]:
+    accounts = account_choices(include_simulated=True, account_mode=account_mode)
+    selected_account = accounts[0] if accounts else None
+    portfolio_names = _portfolio_name_choices_for_account(selected_account)
+    selected_name = portfolio_names[0] if portfolio_names else None
+    selected_choice = _portfolio_choice_for_name(selected_account, selected_name)
+    details = (
+        _portfolio_form_details(selected_choice)
+        if selected_choice
+        else _blank_portfolio_form()
+    )
+    choices = portfolio_view_choices_for_mode(account_mode)
+    return (
+        gr.update(choices=accounts, value=selected_account),
+        gr.update(choices=portfolio_names, value=selected_name),
+        *details[1:],
+        start_portfolio_goal_conversation(selected_choice),
+        gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
+        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS),
         portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
     )
 
 
 def _portfolio_view_changed(
-    portfolios_filter: str,
+    account_mode: str,
     portfolio_view_choice: str | int | None,
 ) -> tuple[Any, ...]:
     return (
-        portfolios_table_data(portfolios_filter, portfolio_view_choice),
+        portfolios_table_data(account_mode, portfolio_view_choice),
         portfolio_assets_table_data(portfolio_view_choice),
     )
 
 
 def _refresh_portfolio_view(
-    portfolios_filter: str,
+    account_mode: str,
     portfolio_view_choice: str | int | None,
 ) -> tuple[Any, ...]:
-    choices = portfolio_view_choices(portfolios_filter)
+    choices = portfolio_view_choices_for_mode(account_mode)
     selected_view = _portfolio_view_choice_for_id(
         choices,
         _parse_portfolio_view_id(portfolio_view_choice),
+    )
+    return (
+        gr.update(choices=choices, value=selected_view),
+        portfolios_table_data(account_mode, selected_view),
+        portfolio_assets_table_data(selected_view),
     )
 
 
 def _get_llm_recommendation(
     portfolio_choice: str | int | None,
     user_answers: str,
-    portfolios_filter: str,
+    account_mode: str,
     portfolio_view_choice: str | int | None,
 ) -> tuple[Any, ...]:
     try:
@@ -277,104 +432,109 @@ def _get_llm_recommendation(
         status,
         rewritten_goals,
         recommendation,
-        portfolios_table_data(portfolios_filter, portfolio_view_choice),
-    )
-    return (
-        gr.update(choices=choices, value=selected_view),
-        portfolios_table_data(portfolios_filter, selected_view),
-        portfolio_assets_table_data(selected_view),
+        portfolios_table_data(account_mode, portfolio_view_choice),
     )
 
 
-def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
+def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) -> dict[str, Any]:
     with gr.Tab("Portfolios"):
         portfolio_status = gr.Textbox(label="Status", interactive=False)
+        initial_portfolio_names = _portfolio_name_choices_for_account(selected_account)
+        initial_portfolio_name = initial_portfolio_names[0] if initial_portfolio_names else ""
+        initial_portfolio_choice = _portfolio_choice_for_name(
+            selected_account,
+            initial_portfolio_name,
+        )
+        (
+            _name_update,
+            _state_value,
+            initial_description,
+            initial_url,
+            initial_goals,
+            initial_goal_type,
+            initial_timeline,
+            initial_rewritten_goals,
+            initial_strategy_recommendation,
+            initial_active,
+        ) = _portfolio_form_details(initial_portfolio_choice)
+        selected_portfolio_state = gr.State(initial_portfolio_choice)
 
         with gr.Row():
             portfolio_account_choice = gr.Dropdown(
                 label="Account",
-                choices=account_choices(include_simulated=True),
+                choices=account_choices(include_simulated=True, account_mode=LIVE_MODE),
                 value=selected_account,
             )
-            new_portfolio_name = gr.Textbox(label="Portfolio", value="Default Portfolio")
-            new_portfolio_url = gr.Textbox(label="Portfolio URL", placeholder="https://")
-        new_portfolio_description = gr.Textbox(label="Description", lines=3)
+            new_portfolio_name = gr.Dropdown(
+                label="Portfolio",
+                choices=initial_portfolio_names,
+                value=initial_portfolio_name,
+                allow_custom_value=True,
+                filterable=True,
+            )
+            new_portfolio_url = gr.Textbox(
+                label="Portfolio URL",
+                value=initial_url,
+                placeholder="https://",
+            )
+        new_portfolio_description = gr.Textbox(
+            label="Description",
+            value=initial_description,
+            lines=3,
+        )
         with gr.Row():
             new_portfolio_goals = gr.CheckboxGroup(
                 label="Portfolio Goals",
                 choices=portfolio_goal_choices(),
+                value=initial_goals,
             )
             new_goal_type = gr.Dropdown(
                 label="Goal Type",
                 choices=portfolio_goal_type_choices(),
-                value=None,
+                value=initial_goal_type or None,
             )
             new_goal_timeline = gr.Dropdown(
                 label="Timeline",
                 choices=portfolio_timeline_choices(),
-                value=None,
+                value=initial_timeline or None,
             )
-        create_portfolio_button = gr.Button("Create Portfolio", variant="primary")
+            edit_portfolio_active = gr.Checkbox(label="Active", value=initial_active)
+        create_portfolio_button = gr.Button("Save Portfolio", variant="primary")
 
-        edit_portfolio_choice = gr.Dropdown(
-            label="Edit Portfolio",
-            choices=portfolio_choices_for_account(
-                selected_account,
-                include_inactive=True,
-            ),
-        )
-        edit_portfolio_name = gr.Textbox(label="Edit Portfolio Name")
-        edit_portfolio_url = gr.Textbox(label="Edit Portfolio URL", placeholder="https://")
-        edit_portfolio_description = gr.Textbox(label="Edit Description", lines=3)
-        with gr.Row():
-            edit_portfolio_goals = gr.CheckboxGroup(
-                label="Edit Portfolio Goals",
-                choices=portfolio_goal_choices(),
-            )
-            edit_goal_type = gr.Dropdown(
-                label="Edit Goal Type",
-                choices=portfolio_goal_type_choices(),
-                value=None,
-            )
-            edit_goal_timeline = gr.Dropdown(
-                label="Edit Timeline",
-                choices=portfolio_timeline_choices(),
-                value=None,
-            )
         edit_rewritten_goals = gr.Textbox(
             label="LLM Rewritten Goals",
+            value=initial_rewritten_goals,
             lines=4,
             interactive=False,
         )
         edit_strategy_recommendation = gr.Textbox(
             label="LLM Strategy Recommendation",
+            value=initial_strategy_recommendation,
             lines=6,
             interactive=False,
         )
-        edit_portfolio_active = gr.Checkbox(label="Active", value=True)
-        update_portfolio_button = gr.Button("Update Portfolio")
 
-        llm_questions = gr.Textbox(label="LLM Conversation", lines=8)
-        llm_answers = gr.Textbox(label="Your Objectives, Risk Tolerance, and Time Horizon", lines=6)
+        llm_questions = gr.Textbox(
+            label="LLM Portfolio Profile",
+            value=start_portfolio_goal_conversation(initial_portfolio_choice),
+            lines=8,
+            interactive=False,
+        )
+        llm_answers = gr.Textbox(label="Optional LLM Notes", lines=4)
         with gr.Row():
             start_llm_button = gr.Button("Start LLM Conversation")
             get_llm_recommendation_button = gr.Button("Get LLM Recommendation")
 
         with gr.Row():
-            portfolios_filter = gr.Radio(
-                label="Show",
-                choices=["All", "Real", "Test"],
-                value="All",
-            )
             portfolio_view_filter = gr.Dropdown(
                 label="Portfolio",
-                choices=portfolio_view_choices(),
+                choices=portfolio_view_choices_for_mode(LIVE_MODE),
                 value=ALL_MASTER_PORTFOLIOS,
                 allow_custom_value=False,
                 filterable=True,
             )
         portfolios_table = gr.Dataframe(
-            value=portfolios_table_data,
+            value=lambda: portfolios_table_data(LIVE_MODE),
             headers=[
                 "ID",
                 "Broker",
@@ -436,63 +596,49 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         refresh_portfolios_button = gr.Button("Refresh Portfolios")
 
         portfolio_account_choice.change(
-            fn=lambda account_choice: gr.update(
-                choices=portfolio_choices_for_account(
-                    account_choice,
-                    include_inactive=True,
-                ),
-                value=None,
-            ),
+            fn=_portfolio_account_changed,
             inputs=[portfolio_account_choice],
-            outputs=[edit_portfolio_choice],
-        )
-        edit_portfolio_choice.change(
-            fn=_load_portfolio_details,
-            inputs=[edit_portfolio_choice],
             outputs=[
-                edit_portfolio_name,
-                edit_portfolio_description,
-                edit_portfolio_url,
-                edit_portfolio_goals,
-                edit_goal_type,
-                edit_goal_timeline,
+                new_portfolio_name,
+                selected_portfolio_state,
+                new_portfolio_description,
+                new_portfolio_url,
+                new_portfolio_goals,
+                new_goal_type,
+                new_goal_timeline,
                 edit_rewritten_goals,
                 edit_strategy_recommendation,
                 edit_portfolio_active,
+                llm_questions,
             ],
         )
-        update_portfolio_button.click(
-            fn=_update_portfolio_callback,
-            inputs=[
-                edit_portfolio_choice,
-                edit_portfolio_name,
-                edit_portfolio_description,
-                edit_portfolio_url,
-                edit_portfolio_goals,
-                edit_goal_type,
-                edit_goal_timeline,
-                edit_portfolio_active,
-                portfolios_filter,
-                portfolio_view_filter,
-            ],
+        new_portfolio_name.change(
+            fn=_portfolio_name_changed,
+            inputs=[portfolio_account_choice, new_portfolio_name],
             outputs=[
-                portfolio_status,
-                edit_portfolio_choice,
-                portfolio_view_filter,
-                portfolios_table,
-                portfolio_assets_table,
+                selected_portfolio_state,
+                new_portfolio_description,
+                new_portfolio_url,
+                new_portfolio_goals,
+                new_goal_type,
+                new_goal_timeline,
+                edit_rewritten_goals,
+                edit_strategy_recommendation,
+                edit_portfolio_active,
+                llm_questions,
             ],
         )
         start_llm_button.click(
             fn=start_portfolio_goal_conversation,
+            inputs=[selected_portfolio_state],
             outputs=[llm_questions],
         )
         get_llm_recommendation_button.click(
             fn=_get_llm_recommendation,
             inputs=[
-                edit_portfolio_choice,
+                selected_portfolio_state,
                 llm_answers,
-                portfolios_filter,
+                mode_toggle,
                 portfolio_view_filter,
             ],
             outputs=[
@@ -504,16 +650,7 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         )
         refresh_portfolios_button.click(
             fn=_refresh_portfolio_view,
-            inputs=[portfolios_filter, portfolio_view_filter],
-            outputs=[
-                portfolio_view_filter,
-                portfolios_table,
-                portfolio_assets_table,
-            ],
-        )
-        portfolios_filter.change(
-            fn=_portfolio_scope_changed,
-            inputs=[portfolios_filter],
+            inputs=[mode_toggle, portfolio_view_filter],
             outputs=[
                 portfolio_view_filter,
                 portfolios_table,
@@ -522,7 +659,7 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         )
         portfolio_view_filter.change(
             fn=_portfolio_view_changed,
-            inputs=[portfolios_filter, portfolio_view_filter],
+            inputs=[mode_toggle, portfolio_view_filter],
             outputs=[portfolios_table, portfolio_assets_table],
         )
 
@@ -535,10 +672,14 @@ def build_portfolios_tab(selected_account: str | None) -> dict[str, Any]:
         "new_portfolio_goals": new_portfolio_goals,
         "new_goal_type": new_goal_type,
         "new_goal_timeline": new_goal_timeline,
-        "edit_portfolio_choice": edit_portfolio_choice,
+        "edit_portfolio_choice": selected_portfolio_state,
+        "edit_portfolio_active": edit_portfolio_active,
+        "edit_rewritten_goals": edit_rewritten_goals,
+        "edit_strategy_recommendation": edit_strategy_recommendation,
+        "llm_questions": llm_questions,
         "create_portfolio_button": create_portfolio_button,
-        "portfolios_filter": portfolios_filter,
         "portfolio_view_filter": portfolio_view_filter,
         "portfolios_table": portfolios_table,
         "portfolio_assets_table": portfolio_assets_table,
+        "refresh_portfolios_button": refresh_portfolios_button,
     }

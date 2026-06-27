@@ -13,7 +13,13 @@ import gradio as gr
 
 from portfolio_management.config import load_settings
 from portfolio_management.db.init_db import initialize_database
-from portfolio_management.tabs.accounts import build_accounts_tab, create_account_callback
+from portfolio_management.tabs.accounts import (
+    account_edit_choices_for_mode,
+    accounts_for_mode,
+    broker_dropdown_choices,
+    build_accounts_tab,
+    create_account_callback,
+)
 from portfolio_management.tabs.alerts import build_alerts_tab
 from portfolio_management.tabs.brokers import build_brokers_tab
 from portfolio_management.tabs.dashboard import (
@@ -25,15 +31,22 @@ from portfolio_management.tabs.dashboard import (
     dashboard_scope_changed,
     refresh_dashboard,
 )
-from portfolio_management.tabs.data_entry import build_data_entry_tab
-from portfolio_management.tabs.performance import build_performance_tab
-from portfolio_management.tabs.portfolios import build_portfolios_tab, create_portfolio_callback
-from portfolio_management.tabs.rebalance import build_rebalance_tab
+from portfolio_management.tabs.data_entry import build_data_entry_tab, data_entry_mode_changed
+from portfolio_management.tabs.export import build_export_tab, _export_scope_changed
+from portfolio_management.tabs.performance import build_performance_tab, refresh_performance_for_mode
+from portfolio_management.tabs.portfolios import (
+    build_portfolios_tab,
+    portfolios_mode_changed,
+    save_portfolio_callback,
+)
+from portfolio_management.tabs.rebalance import build_rebalance_tab, _rebalance_mode_changed
 from portfolio_management.tabs.settings import build_settings_tab
 from portfolio_management.tabs.securities import build_securities_tab
-from portfolio_management.tabs.export import build_export_tab
 from portfolio_management.tabs.tax import build_tax_tab, _refresh_tax_report
+from portfolio_management.services.analysis_filters import APP_ACCOUNT_MODE_CHOICES
+from portfolio_management.services.analytics import LIVE_MODE
 from portfolio_management.services.accounts import (
+    account_choices,
     default_account_choice,
     default_portfolio_choice,
 )
@@ -95,10 +108,27 @@ def _mode_changed(
     )
 
 
+def _accounts_mode_changed(account_mode: str) -> tuple[object, ...]:
+    return account_edit_choices_for_mode(account_mode), accounts_for_mode(account_mode)
+
+
+def _account_broker_dropdowns_changed() -> tuple[object, ...]:
+    active_brokers = broker_dropdown_choices()
+    all_brokers = broker_dropdown_choices(include_inactive=True)
+    return (
+        gr.update(
+            choices=active_brokers,
+            value=active_brokers[0] if active_brokers else None,
+        ),
+        gr.update(choices=all_brokers),
+    )
+
+
 def build_app() -> gr.Blocks:
     initialize_database()
     settings = load_settings()
-    selected_account = default_account_choice()
+    live_accounts = account_choices(account_mode=LIVE_MODE)
+    selected_account = live_accounts[0] if live_accounts else default_account_choice()
     selected_portfolio = default_portfolio_choice(selected_account)
 
     with gr.Blocks(
@@ -122,23 +152,29 @@ def build_app() -> gr.Blocks:
                 "})();</script>"
             )
         )
-        if APP_TITLE_ICON_DATA_URI:
-            gr.HTML(
-                (
-                    "<div style='display:flex;align-items:center;gap:10px;margin:0 0 8px 0;'>"
-                    f"<img src='{APP_TITLE_ICON_DATA_URI}' alt='Portfolio Tracker icon' "
-                    "style='width:28px;height:28px;border-radius:6px;' />"
-                    "<h1 style='margin:0;'>Portfolio Tracker</h1>"
-                    "</div>"
+        with gr.Row():
+            with gr.Column(scale=5):
+                if APP_TITLE_ICON_DATA_URI:
+                    gr.HTML(
+                        (
+                            "<div style='display:flex;align-items:center;gap:10px;margin:0 0 8px 0;'>"
+                            f"<img src='{APP_TITLE_ICON_DATA_URI}' alt='Portfolio Tracker icon' "
+                            "style='width:28px;height:28px;border-radius:6px;' />"
+                            "<h1 style='margin:0;'>Portfolio Tracker</h1>"
+                            "</div>"
+                        )
+                    )
+                else:
+                    gr.Markdown("# Portfolio Tracker")
+            with gr.Column(scale=2):
+                mode_toggle = gr.Radio(
+                    label="Mode",
+                    choices=APP_ACCOUNT_MODE_CHOICES,
+                    value=LIVE_MODE,
                 )
-            )
-        else:
-            gr.Markdown("# Portfolio Tracker")
 
         # ── Build each tab ────────────────────────────────────────────────
-        # mode_toggle lives inside the Dashboard tab so it doesn't clutter other tabs
         dashboard = build_dashboard_tab()
-        mode_toggle = dashboard["mode_toggle"]
         reporting_currency = dashboard["reporting_currency"]
         dashboard_portfolio_filter = dashboard["portfolio_filter"]
         positions_account_filter = dashboard["positions_account_filter"]
@@ -146,18 +182,18 @@ def build_app() -> gr.Blocks:
         positions_asset_class_filter = dashboard["positions_asset_class_filter"]
         mode_banner_html = dashboard["mode_banner_html"]
 
-        build_rebalance_tab(mode_toggle)
+        rebalance = build_rebalance_tab(mode_toggle)
         with gr.Tab("Master Data"):
             with gr.Tabs():
                 brokers = build_brokers_tab()
-                accounts = build_accounts_tab(selected_account)
-                portfolios = build_portfolios_tab(selected_account)
+                accounts = build_accounts_tab(selected_account, mode_toggle)
+                portfolios = build_portfolios_tab(selected_account, mode_toggle)
                 build_securities_tab()
-        data_entry = build_data_entry_tab(selected_account, selected_portfolio)
+        data_entry = build_data_entry_tab(selected_account, selected_portfolio, mode_toggle)
         performance = build_performance_tab(mode_toggle)
         tax = build_tax_tab(mode_toggle)
         build_alerts_tab()
-        import_export = build_export_tab()
+        import_export = build_export_tab(mode_toggle)
         settings_tab = build_settings_tab()
 
         # Keep the Import / Export paths in sync when they are saved in Settings.
@@ -172,6 +208,20 @@ def build_app() -> gr.Blocks:
                 import_export["fx_path"],
             ],
         )
+
+        for broker_button in [
+            brokers["create_broker_button"],
+            brokers["update_broker_button"],
+            brokers["delete_broker_button"],
+            brokers["refresh_brokers_button"],
+        ]:
+            broker_button.click(
+                fn=_account_broker_dropdowns_changed,
+                outputs=[
+                    accounts["broker_name_input"],
+                    accounts["edit_broker_name"],
+                ],
+            )
 
         # ── Cross-tab: Dashboard refresh (needs top-level mode_banner_html) ──
         dashboard["refresh_dashboard_button"].click(
@@ -203,7 +253,7 @@ def build_app() -> gr.Blocks:
                 accounts["new_account_description"],
                 accounts["tax_wrapper_type"],
                 accounts["is_simulated"],
-                accounts["accounts_filter"],
+                mode_toggle,
             ],
             outputs=[
                 accounts["account_status"],
@@ -216,10 +266,11 @@ def build_app() -> gr.Blocks:
             ],
         )
 
-        # ── Cross-tab: Create Portfolio (touches portfolios + data_entry) ─
+        # ── Cross-tab: Save Portfolio (touches portfolios + data_entry) ─
         portfolios["create_portfolio_button"].click(
-            fn=create_portfolio_callback,
+            fn=save_portfolio_callback,
             inputs=[
+                portfolios["edit_portfolio_choice"],
                 portfolios["portfolio_account_choice"],
                 portfolios["new_portfolio_name"],
                 portfolios["new_portfolio_description"],
@@ -227,7 +278,8 @@ def build_app() -> gr.Blocks:
                 portfolios["new_portfolio_goals"],
                 portfolios["new_goal_type"],
                 portfolios["new_goal_timeline"],
-                portfolios["portfolios_filter"],
+                portfolios["edit_portfolio_active"],
+                mode_toggle,
                 portfolios["portfolio_view_filter"],
             ],
             outputs=[
@@ -235,6 +287,9 @@ def build_app() -> gr.Blocks:
                 portfolios["portfolio_account_choice"],
                 data_entry["account_choice"],
                 data_entry["portfolio_choice"],
+                portfolios["new_portfolio_name"],
+                portfolios["edit_portfolio_choice"],
+                portfolios["llm_questions"],
                 portfolios["portfolio_view_filter"],
                 portfolios["portfolios_table"],
                 portfolios["portfolio_assets_table"],
@@ -257,6 +312,78 @@ def build_app() -> gr.Blocks:
                 dashboard["currency_allocation_plot"],
                 tax["tax_report"],
             ],
+        )
+        mode_toggle.change(
+            fn=refresh_performance_for_mode,
+            inputs=[
+                mode_toggle,
+                performance["benchmark_choice"],
+                performance["reporting_currency"],
+                performance["risk_free_rate"],
+            ],
+            outputs=[
+                performance["portfolio_filter"],
+                performance["portfolio_value_plot"],
+                performance["performance_plot"],
+                performance["drawdown_plot"],
+                performance["risk_metrics_table"],
+                performance["benchmark_plot"],
+                performance["benchmark_metrics_table"],
+                performance["correlation_plot"],
+                performance["stress_plot"],
+            ],
+        )
+        mode_toggle.change(
+            fn=_rebalance_mode_changed,
+            inputs=[mode_toggle],
+            outputs=[
+                rebalance["rebalance_account"],
+                rebalance["saved_target"],
+                rebalance["target_allocations_table"],
+                rebalance["rebalance_table"],
+            ],
+        )
+        mode_toggle.change(
+            fn=_accounts_mode_changed,
+            inputs=[mode_toggle],
+            outputs=[accounts["edit_account_choice"], accounts["accounts_table"]],
+        )
+        mode_toggle.change(
+            fn=portfolios_mode_changed,
+            inputs=[mode_toggle],
+            outputs=[
+                portfolios["portfolio_account_choice"],
+                portfolios["new_portfolio_name"],
+                portfolios["edit_portfolio_choice"],
+                portfolios["new_portfolio_description"],
+                portfolios["new_portfolio_url"],
+                portfolios["new_portfolio_goals"],
+                portfolios["new_goal_type"],
+                portfolios["new_goal_timeline"],
+                portfolios["edit_rewritten_goals"],
+                portfolios["edit_strategy_recommendation"],
+                portfolios["edit_portfolio_active"],
+                portfolios["llm_questions"],
+                portfolios["portfolio_view_filter"],
+                portfolios["portfolios_table"],
+                portfolios["portfolio_assets_table"],
+            ],
+        )
+        mode_toggle.change(
+            fn=data_entry_mode_changed,
+            inputs=[mode_toggle],
+            outputs=[
+                data_entry["txns_table"],
+                data_entry["account_choice"],
+                data_entry["portfolio_choice"],
+                data_entry["transfer_source_account"],
+                data_entry["transfer_target_account"],
+            ],
+        )
+        mode_toggle.change(
+            fn=_export_scope_changed,
+            inputs=[mode_toggle],
+            outputs=[import_export["export_portfolio_filter"]],
         )
         reporting_currency.change(
             fn=refresh_dashboard,

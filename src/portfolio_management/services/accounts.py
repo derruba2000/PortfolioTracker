@@ -545,7 +545,10 @@ def get_or_create_portfolio(
 def account_choices(
     include_simulated: bool = True,
     include_inactive: bool = False,
+    account_mode: str | None = None,
 ) -> list[str]:
+    from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE
+
     session_factory = get_session_factory()
     with session_factory() as session:
         statement = (
@@ -553,7 +556,9 @@ def account_choices(
             .join(Account.broker)
             .order_by(Broker.name, Account.name)
         )
-        if not include_simulated:
+        if account_mode == SANDBOX_MODE:
+            statement = statement.where(Account.is_simulated.is_(True))
+        elif account_mode == LIVE_MODE or not include_simulated:
             statement = statement.where(Account.is_simulated.is_(False))
         if not include_inactive:
             statement = statement.where(Account.is_active.is_(True), Broker.is_active.is_(True))

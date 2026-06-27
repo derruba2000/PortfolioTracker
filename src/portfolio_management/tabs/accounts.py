@@ -7,23 +7,63 @@ import gradio as gr
 from portfolio_management.services.accounts import (
     account_choices,
     account_details,
+    broker_choices,
+    broker_details,
     create_account,
     list_accounts,
     list_brokers_detailed,
     update_account,
 )
+from portfolio_management.services.analysis_filters import account_mode_to_table_filter
+from portfolio_management.services.analytics import LIVE_MODE
 from portfolio_management.services.reference_data import list_currency_codes
 
 
-def create_account_callback(
+def accounts_for_mode(account_mode: str) -> object:
+    return list_accounts(account_mode_to_table_filter(account_mode))
+
+
+def account_edit_choices_for_mode(account_mode: str, selected: str | None = None) -> object:
+    choices = account_choices(
+        include_simulated=True,
+        include_inactive=True,
+        account_mode=account_mode,
+    )
+    value = selected if selected in choices else (choices[0] if choices else None)
+    return gr.update(choices=choices, value=value)
+
+
+def broker_dropdown_choices(include_inactive: bool = False) -> list[str]:
+    return broker_choices(include_inactive=include_inactive)
+
+
+def _broker_name_from_choice(broker_choice: str | None) -> str:
+    broker_name, _description, _active = broker_details(broker_choice)
+    return broker_name
+
+
+def _broker_choice_for_name(
     broker_name: str,
+    include_inactive: bool = True,
+) -> str | None:
+    for choice in broker_dropdown_choices(include_inactive=include_inactive):
+        choice_name, _description, _active = broker_details(choice)
+        if choice_name == broker_name:
+            return choice
+    return None
+
+
+def create_account_callback(
+    broker_choice: str,
     account_name: str,
     currency_code: str,
     description: str,
     tax_wrapper_type: str,
     is_simulated: bool,
-    accounts_filter: str = "All",
+    account_mode: str = LIVE_MODE,
 ) -> tuple[Any, ...]:
+    accounts_filter = account_mode_to_table_filter(account_mode)
+    broker_name = _broker_name_from_choice(broker_choice)
     try:
         status = create_account(
             broker_name=broker_name,
@@ -41,7 +81,11 @@ def create_account_callback(
             list_accounts(accounts_filter),
         )
 
-    accounts = account_choices(include_simulated=True, include_inactive=False)
+    accounts = account_choices(
+        include_simulated=True,
+        include_inactive=False,
+        account_mode=account_mode,
+    )
     selected_account = next(
         (choice for choice in accounts if f"/ {account_name}" in choice),
         accounts[0] if accounts else None,
@@ -57,21 +101,34 @@ def create_account_callback(
     )
 
 
-def _load_account_details(account_choice: str) -> tuple[str, str, str, str, str, bool, bool]:
-    return account_details(account_choice)
+def _load_account_details(account_choice: str) -> tuple[Any, ...]:
+    broker_name, account_name, currency, description, tax_wrapper, simulated, active = (
+        account_details(account_choice)
+    )
+    return (
+        _broker_choice_for_name(broker_name),
+        account_name,
+        currency,
+        description,
+        tax_wrapper,
+        simulated,
+        active,
+    )
 
 
 def _update_account_callback(
     account_choice: str,
-    broker_name: str,
+    broker_choice: str,
     account_name: str,
     currency_code: str,
     description: str,
     tax_wrapper_type: str,
     is_simulated: bool,
     is_active: bool,
-    accounts_filter: str = "All",
+    account_mode: str = LIVE_MODE,
 ) -> tuple[Any, ...]:
+    accounts_filter = account_mode_to_table_filter(account_mode)
+    broker_name = _broker_name_from_choice(broker_choice)
     try:
         status = update_account(
             account_choice=account_choice,
@@ -85,17 +142,29 @@ def _update_account_callback(
         )
     except Exception as exc:
         status = f"Could not update account: {exc}"
-    updated_accounts = account_choices(include_simulated=True, include_inactive=True)
+    updated_accounts = account_choices(
+        include_simulated=True,
+        include_inactive=True,
+        account_mode=account_mode,
+    )
     selected = next((choice for choice in updated_accounts if choice.startswith(str(account_choice).split('|')[0].strip())), account_choice)
     return status, gr.update(choices=updated_accounts, value=selected), list_accounts(accounts_filter)
 
 
-def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
+def build_accounts_tab(selected_account: str | None, mode_toggle: gr.Radio) -> dict[str, Any]:
     with gr.Tab("Accounts"):
         account_status = gr.Textbox(label="Status", interactive=False)
+        active_brokers = broker_dropdown_choices()
+        all_brokers = broker_dropdown_choices(include_inactive=True)
+        selected_broker = active_brokers[0] if active_brokers else None
 
         with gr.Row():
-            broker_name_input = gr.Textbox(label="Broker", value="Default Broker")
+            broker_name_input = gr.Dropdown(
+                label="Broker",
+                choices=active_brokers,
+                value=selected_broker,
+                allow_custom_value=False,
+            )
             account_name_input = gr.Textbox(label="Account", value="Default Account")
             account_currency_code = gr.Dropdown(
                 label="Account Currency",
@@ -109,9 +178,14 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
             is_simulated = gr.Checkbox(label="Simulation / Paper Trading account")
         create_account_button = gr.Button("Create Account", variant="primary")
 
-        edit_choices = account_choices(include_simulated=True, include_inactive=True)
+        edit_choices = account_choices(
+            include_simulated=True,
+            include_inactive=True,
+            account_mode=LIVE_MODE,
+        )
         edit_selected = selected_account if selected_account in edit_choices else (edit_choices[0] if edit_choices else None)
         broker_name, account_name, currency, description, tax_wrapper, simulated, active = account_details(edit_selected)
+        edit_selected_broker = _broker_choice_for_name(broker_name)
 
         edit_account_choice = gr.Dropdown(
             label="Edit Account",
@@ -119,7 +193,12 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
             value=edit_selected,
         )
         with gr.Row():
-            edit_broker_name = gr.Textbox(label="Edit Broker", value=broker_name)
+            edit_broker_name = gr.Dropdown(
+                label="Edit Broker",
+                choices=all_brokers,
+                value=edit_selected_broker,
+                allow_custom_value=False,
+            )
             edit_account_name = gr.Textbox(label="Edit Account Name", value=account_name)
             edit_account_currency = gr.Dropdown(
                 label="Edit Currency",
@@ -138,13 +217,8 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
             edit_is_active = gr.Checkbox(label="Active", value=active)
         save_account_button = gr.Button("Update Account")
 
-        accounts_filter = gr.Radio(
-            label="Show",
-            choices=["All", "Real", "Test"],
-            value="All",
-        )
         accounts_table = gr.Dataframe(
-            value=list_accounts,
+            value=lambda: accounts_for_mode(LIVE_MODE),
             headers=["ID", "Broker", "Account", "Description", "Currency", "Tax Wrapper", "Simulated", "Active"],
             datatype=["number", "str", "str", "str", "str", "str", "str", "str"],
             label="Accounts",
@@ -152,8 +226,11 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
         )
         refresh_accounts_button = gr.Button("Refresh Accounts")
 
-        refresh_accounts_button.click(fn=list_accounts, inputs=[accounts_filter], outputs=[accounts_table])
-        accounts_filter.change(fn=list_accounts, inputs=[accounts_filter], outputs=[accounts_table])
+        refresh_accounts_button.click(
+            fn=accounts_for_mode,
+            inputs=[mode_toggle],
+            outputs=[accounts_table],
+        )
         edit_account_choice.change(
             fn=_load_account_details,
             inputs=[edit_account_choice],
@@ -178,7 +255,7 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
                 edit_tax_wrapper,
                 edit_is_simulated,
                 edit_is_active,
-                accounts_filter,
+                mode_toggle,
             ],
             outputs=[account_status, edit_account_choice, accounts_table],
         )
@@ -193,6 +270,7 @@ def build_accounts_tab(selected_account: str | None) -> dict[str, Any]:
         "is_simulated": is_simulated,
         "create_account_button": create_account_button,
         "edit_account_choice": edit_account_choice,
-        "accounts_filter": accounts_filter,
+        "edit_broker_name": edit_broker_name,
         "accounts_table": accounts_table,
+        "refresh_accounts_button": refresh_accounts_button,
     }
