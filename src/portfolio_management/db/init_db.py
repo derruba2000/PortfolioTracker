@@ -393,10 +393,47 @@ def _migrate_alert_account_names(connection: object) -> None:
 
 def _migrate_account_strategies_decimal(connection: object) -> None:
     """Migrate account_strategies.allocation_weight from VARCHAR to DECIMAL."""
+    columns = _get_columns(connection, "account_strategies")
+    if not columns:
+        return
+
+    timestamp = connection.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+    if "created_at" not in columns:
+        connection.execute(text("ALTER TABLE account_strategies ADD COLUMN created_at DATETIME"))
+        connection.execute(
+            text(
+                """
+                UPDATE account_strategies
+                SET created_at = :timestamp
+                WHERE created_at IS NULL
+                """
+            ),
+            {"timestamp": timestamp},
+        )
+        columns["created_at"] = "DATETIME"
+    if "updated_at" not in columns:
+        connection.execute(text("ALTER TABLE account_strategies ADD COLUMN updated_at DATETIME"))
+        connection.execute(
+            text(
+                """
+                UPDATE account_strategies
+                SET updated_at = :timestamp
+                WHERE updated_at IS NULL
+                """
+            ),
+            {"timestamp": timestamp},
+        )
+        columns["updated_at"] = "DATETIME"
+
     column_type = _get_column_type(connection, "account_strategies", "allocation_weight")
     if column_type and "DECIMAL" not in column_type:
         raw_rows = connection.execute(
-            text("SELECT account_id, strategy_id, allocation_weight FROM account_strategies")
+            text(
+                """
+                SELECT account_id, strategy_id, allocation_weight, created_at, updated_at
+                FROM account_strategies
+                """
+            )
         ).mappings().all()
 
         connection.execute(text("PRAGMA foreign_keys=OFF"))
@@ -407,6 +444,8 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
                     account_id INTEGER NOT NULL,
                     strategy_id INTEGER NOT NULL,
                     allocation_weight DECIMAL(32, 10) NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
                     PRIMARY KEY (account_id, strategy_id),
                     FOREIGN KEY(account_id) REFERENCES accounts (id),
                     FOREIGN KEY(strategy_id) REFERENCES strategies (id)
@@ -418,14 +457,19 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
             connection.execute(
                 text(
                     """
-                    INSERT INTO account_strategies_new (account_id, strategy_id, allocation_weight)
-                    VALUES (:account_id, :strategy_id, :allocation_weight)
+                    INSERT INTO account_strategies_new (
+                        account_id, strategy_id, allocation_weight, created_at, updated_at
+                    ) VALUES (
+                        :account_id, :strategy_id, :allocation_weight, :created_at, :updated_at
+                    )
                     """
                 ),
                 {
                     "account_id": row["account_id"],
                     "strategy_id": row["strategy_id"],
                     "allocation_weight": str(Decimal(str(row["allocation_weight"]))),
+                    "created_at": row["created_at"] or timestamp,
+                    "updated_at": row["updated_at"] or timestamp,
                 },
             )
         connection.execute(text("DROP TABLE account_strategies"))

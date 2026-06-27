@@ -137,6 +137,19 @@ class AccountStrategy(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
     strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
     allocation_weight: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
 
     account: Mapped[Account] = relationship(back_populates="account_strategies")
     strategy: Mapped[Strategy] = relationship(back_populates="account_strategies")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -32,6 +33,7 @@ def create_target_allocation(
         if account is None:
             raise ValueError(f"Account id {account_id} does not exist.")
         strategy = get_or_create_strategy(session, asset_class)
+        timestamp = datetime.now(UTC)
         account_strategy = session.get(
             AccountStrategy,
             {"account_id": account.id, "strategy_id": strategy.id},
@@ -41,13 +43,49 @@ def create_target_allocation(
                 account=account,
                 strategy=strategy,
                 allocation_weight=target_weight,
+                created_at=timestamp,
+                updated_at=timestamp,
             )
             session.add(account_strategy)
         else:
             account_strategy.allocation_weight = target_weight
+            account_strategy.updated_at = timestamp
         session.commit()
 
     return f"Set {asset_class} target to {target_weight_percent}%."
+
+
+def delete_target_allocation(
+    account_choice: str | int | None,
+    asset_class: str | None,
+) -> str:
+    account_id = parse_choice_id(account_choice)
+    if account_id is None:
+        raise ValueError("Account is required.")
+    if not asset_class:
+        raise ValueError("Target asset class is required.")
+
+    asset_class = AssetClass(asset_class).value
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            raise ValueError(f"Account id {account_id} does not exist.")
+        strategy = session.scalar(select(Strategy).where(Strategy.name == asset_class))
+        if strategy is None:
+            raise ValueError(f"No target allocation exists for {asset_class}.")
+
+        account_strategy = session.get(
+            AccountStrategy,
+            {"account_id": account.id, "strategy_id": strategy.id},
+        )
+        if account_strategy is None:
+            raise ValueError(f"No target allocation exists for {asset_class}.")
+
+        session.delete(account_strategy)
+        session.commit()
+
+    return f"Deleted {asset_class} target allocation."
 
 
 def get_or_create_strategy(session: Session, name: str) -> Strategy:

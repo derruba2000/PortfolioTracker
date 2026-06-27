@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from portfolio_management.db.base import Base
 from portfolio_management.db.models import (
     Account,
+    AccountStrategy,
     AssetClass,
     Benchmark,
     Broker,
@@ -24,6 +25,7 @@ from portfolio_management.services.analytics import tax_prep_report
 from portfolio_management.services.benchmarks import benchmark_overlay
 from portfolio_management.services.rebalancing import (
     create_target_allocation,
+    delete_target_allocation,
     rebalance_report,
     target_allocations,
 )
@@ -85,6 +87,64 @@ def test_rebalance_report_compares_actual_to_targets(monkeypatch) -> None:
     assert Decimal(str(report.loc[0, "Target %"])) == Decimal("60")
     assert report.loc[0, "Action"] == "SELL"
     assert Decimal(str(report.loc[0, "Trade Value"])) == Decimal("400")
+
+
+def test_target_allocation_timestamps_insert_and_update(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        session.add(account)
+        session.commit()
+        account_choice = f"{account.id} | Broker / ISA"
+
+    _patch_session(monkeypatch, engine)
+
+    create_target_allocation(account_choice, "EQUITY", "60")
+
+    with Session(engine) as session:
+        account_strategy = session.scalar(select(AccountStrategy))
+        assert account_strategy is not None
+        assert account_strategy.created_at is not None
+        assert account_strategy.updated_at is not None
+        original_created_at = account_strategy.created_at
+        old_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+        account_strategy.updated_at = old_updated_at
+        session.commit()
+
+    create_target_allocation(account_choice, "EQUITY", "70")
+
+    with Session(engine) as session:
+        account_strategy = session.scalar(select(AccountStrategy))
+        assert account_strategy is not None
+        assert account_strategy.allocation_weight == Decimal("0.7000000000")
+        assert account_strategy.created_at == original_created_at
+        assert account_strategy.updated_at != old_updated_at
+
+
+def test_delete_target_allocation_removes_existing_target(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        session.add(account)
+        session.commit()
+        account_choice = f"{account.id} | Broker / ISA"
+
+    _patch_session(monkeypatch, engine)
+
+    create_target_allocation(account_choice, "EQUITY", "60")
+    delete_target_allocation(account_choice, "EQUITY")
+
+    with Session(engine) as session:
+        assert session.scalar(select(AccountStrategy)) is None
+
+    targets = target_allocations(account_choice)
+    assert targets.empty
 
 
 def test_rebalance_uses_selected_account_currency_and_account_type(monkeypatch) -> None:
