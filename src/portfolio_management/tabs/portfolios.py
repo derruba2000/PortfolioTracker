@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import gradio as gr
@@ -21,6 +22,8 @@ from portfolio_management.services.analysis_filters import account_mode_to_table
 from portfolio_management.services.analytics import ALL_ACCOUNTS_MODE, LIVE_MODE, current_positions
 from portfolio_management.services.portfolio_recommendations import (
     generate_and_store_portfolio_recommendation,
+    start_ai_chat,
+    continue_ai_chat,
     start_portfolio_goal_conversation,
 )
 from portfolio_management.tabs._shared import (
@@ -32,6 +35,12 @@ from portfolio_management.tabs._shared import (
 
 
 ALL_MASTER_PORTFOLIOS = "All Portfolios"
+
+
+def _format_llm_timestamp(llm_updated_at: datetime | None) -> str:
+    if llm_updated_at is None:
+        return "AI values: not yet computed"
+    return f"AI values last computed: {llm_updated_at.strftime('%Y-%m-%d %H:%M UTC')}"
 
 
 def create_portfolio_callback(
@@ -118,9 +127,11 @@ def _portfolio_choice_for_name(
 
 
 def _portfolio_form_details(portfolio_choice: str | int | None) -> tuple[Any, ...]:
-    name, description, url, goals, goal_type, timeline, rewritten, recommendation, active = (
+    name, description, url, goals, goal_type, timeline, rewritten, recommendation, profile, ai_notes, llm_updated_at, active = (
         portfolio_details(portfolio_choice)
     )
+    llm_timestamp = _format_llm_timestamp(llm_updated_at)
+    llm_profile = profile if profile else start_portfolio_goal_conversation(portfolio_choice)
     return (
         gr.update(value=name),
         portfolio_choice,
@@ -132,6 +143,11 @@ def _portfolio_form_details(portfolio_choice: str | int | None) -> tuple[Any, ..
         rewritten,
         recommendation,
         active,
+        llm_timestamp,
+        ai_notes,       # idx 11 — still sent to hidden llm_answers for app.py compat
+        llm_profile,    # idx 12 — AI Portfolio Profile display
+        gr.update(visible=False),  # idx 13 — chat_column: hide when switching portfolio
+        [],             # idx 14 — ai_chat: clear history when switching portfolio
     )
 
 
@@ -147,6 +163,11 @@ def _blank_portfolio_form() -> tuple[Any, ...]:
         gr.update(value=""),
         gr.update(value=""),
         True,
+        "AI values: not yet computed",
+        "",
+        "Select or save a portfolio first before starting an AI conversation.",
+        gr.update(visible=False),
+        [],
     )
 
 
@@ -162,7 +183,6 @@ def _portfolio_account_changed(account_choice: str | int | None) -> tuple[Any, .
     return (
         gr.update(choices=names, value=selected_name),
         *details[1:],
-        start_portfolio_goal_conversation(selected_choice),
     )
 
 
@@ -172,11 +192,8 @@ def _portfolio_name_changed(
 ) -> tuple[Any, ...]:
     portfolio_choice = _portfolio_choice_for_name(account_choice, portfolio_name)
     if portfolio_choice is None:
-        return (*_blank_portfolio_form()[1:], "Select or save a portfolio first.")
-    return (
-        *_portfolio_form_details(portfolio_choice)[1:],
-        start_portfolio_goal_conversation(portfolio_choice),
-    )
+        return _blank_portfolio_form()[1:]
+    return _portfolio_form_details(portfolio_choice)[1:]
 
 
 def save_portfolio_callback(
@@ -231,6 +248,10 @@ def save_portfolio_callback(
     selected_portfolio = selected_choice if selected_choice in account_portfolios else (
         account_portfolios[0] if account_portfolios else None
     )
+    form = _portfolio_form_details(selected_choice) if selected_choice else _blank_portfolio_form()
+    llm_timestamp = form[10]
+    ai_notes_val = form[11]
+    llm_profile = form[12]
     return (
         status,
         account_update,
@@ -238,7 +259,9 @@ def save_portfolio_callback(
         gr.update(choices=account_portfolios, value=selected_portfolio),
         gr.update(choices=names, value=portfolio_name),
         selected_choice,
-        start_portfolio_goal_conversation(selected_choice),
+        llm_profile,
+        llm_timestamp,
+        ai_notes_val,
         gr.update(choices=choices, value=selected_view),
         portfolios_table_data(account_mode, selected_view),
         portfolio_assets_table_data(selected_view),
@@ -380,7 +403,6 @@ def portfolios_mode_changed(account_mode: str) -> tuple[Any, ...]:
         gr.update(choices=accounts, value=selected_account),
         gr.update(choices=portfolio_names, value=selected_name),
         *details[1:],
-        start_portfolio_goal_conversation(selected_choice),
         gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
         portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS),
         portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
@@ -415,25 +437,55 @@ def _refresh_portfolio_view(
 
 def _get_llm_recommendation(
     portfolio_choice: str | int | None,
-    user_answers: str,
+    chat_history: list[dict[str, str]],
     account_mode: str,
     portfolio_view_choice: str | int | None,
 ) -> tuple[Any, ...]:
     try:
-        status, rewritten_goals, recommendation = generate_and_store_portfolio_recommendation(
+        status, rewritten_goals, recommendation, profile = generate_and_store_portfolio_recommendation(
             portfolio_choice,
-            user_answers,
+            chat_history,
         )
     except Exception as exc:
-        status = f"Could not get LLM recommendation: {exc}"
+        status = f"Could not get AI recommendation: {exc}"
         rewritten_goals = ""
         recommendation = ""
+        profile = ""
+    _, _, _, _, _, _, _, _, _, _, llm_updated_at, _ = portfolio_details(portfolio_choice)
+    llm_timestamp = _format_llm_timestamp(llm_updated_at)
     return (
         status,
         rewritten_goals,
         recommendation,
+        profile,
+        llm_timestamp,
         portfolios_table_data(account_mode, portfolio_view_choice),
     )
+
+
+def _start_advising_chat(portfolio_choice: str | int | None) -> tuple[Any, Any]:
+    history = start_ai_chat(portfolio_choice)
+    return history, gr.update(visible=True)
+
+
+def _send_chat_message(
+    portfolio_choice: str | int | None,
+    history: list[dict[str, str]],
+    user_message: str,
+) -> tuple[list[dict[str, str]], str]:
+    message = (user_message or "").strip()
+    if not message:
+        return history, ""
+    updated = continue_ai_chat(portfolio_choice, history, message)
+    return updated, ""
+
+
+def _load_llm_from_db(portfolio_choice: str | int | None) -> tuple[Any, ...]:
+    _, _, _, _, _, _, rewritten, recommendation, profile, ai_notes, llm_updated_at, _ = portfolio_details(
+        portfolio_choice
+    )
+    llm_timestamp = _format_llm_timestamp(llm_updated_at)
+    return rewritten, recommendation, profile, ai_notes, llm_timestamp
 
 
 def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) -> dict[str, Any]:
@@ -456,6 +508,11 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
             initial_rewritten_goals,
             initial_strategy_recommendation,
             initial_active,
+            initial_llm_timestamp,
+            initial_ai_notes,
+            initial_llm_profile,
+            _chat_col_visible,
+            _chat_history,
         ) = _portfolio_form_details(initial_portfolio_choice)
         selected_portfolio_state = gr.State(initial_portfolio_choice)
 
@@ -502,28 +559,52 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
         create_portfolio_button = gr.Button("Save Portfolio", variant="primary")
 
         edit_rewritten_goals = gr.Textbox(
-            label="LLM Rewritten Goals",
+            label="AI Rewritten Goals",
             value=initial_rewritten_goals,
             lines=4,
             interactive=False,
         )
         edit_strategy_recommendation = gr.Textbox(
-            label="LLM Strategy Recommendation",
+            label="AI Strategy Recommendation",
             value=initial_strategy_recommendation,
             lines=6,
             interactive=False,
         )
 
+        llm_timestamp_label = gr.Markdown(value=initial_llm_timestamp)
         llm_questions = gr.Textbox(
-            label="LLM Portfolio Profile",
-            value=start_portfolio_goal_conversation(initial_portfolio_choice),
-            lines=8,
+            label="AI Portfolio Profile",
+            value=initial_llm_profile,
+            lines=5,
             interactive=False,
         )
-        llm_answers = gr.Textbox(label="Optional LLM Notes", lines=4)
+
+        # Hidden textbox kept for backward-compatible wiring in app.py
+        llm_answers = gr.Textbox(value=initial_ai_notes, visible=False)
+
         with gr.Row():
-            start_llm_button = gr.Button("Start LLM Conversation")
-            get_llm_recommendation_button = gr.Button("Get LLM Recommendation")
+            advising_button = gr.Button("Start / Change AI Advising")
+            get_llm_recommendation_button = gr.Button(
+                "Get AI Recommendations",
+                variant="primary",
+            )
+            load_llm_from_db_button = gr.Button("Load previous AI insights")
+
+        with gr.Column(visible=False) as chat_column:
+            ai_chat = gr.Chatbot(
+                label="AI Portfolio Advisor",
+                height=420,
+                type="messages",
+                show_label=True,
+            )
+            with gr.Row():
+                chat_input = gr.Textbox(
+                    placeholder="Type your answer here and press Enter or Send…",
+                    show_label=False,
+                    lines=2,
+                    scale=5,
+                )
+                send_button = gr.Button("Send", scale=1, min_width=80)
 
         with gr.Row():
             portfolio_view_filter = gr.Dropdown(
@@ -609,7 +690,11 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
                 edit_rewritten_goals,
                 edit_strategy_recommendation,
                 edit_portfolio_active,
+                llm_timestamp_label,
+                llm_answers,
                 llm_questions,
+                chat_column,
+                ai_chat,
             ],
         )
         new_portfolio_name.change(
@@ -625,19 +710,33 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
                 edit_rewritten_goals,
                 edit_strategy_recommendation,
                 edit_portfolio_active,
+                llm_timestamp_label,
+                llm_answers,
                 llm_questions,
+                chat_column,
+                ai_chat,
             ],
         )
-        start_llm_button.click(
-            fn=start_portfolio_goal_conversation,
+        advising_button.click(
+            fn=_start_advising_chat,
             inputs=[selected_portfolio_state],
-            outputs=[llm_questions],
+            outputs=[ai_chat, chat_column],
+        )
+        send_button.click(
+            fn=_send_chat_message,
+            inputs=[selected_portfolio_state, ai_chat, chat_input],
+            outputs=[ai_chat, chat_input],
+        )
+        chat_input.submit(
+            fn=_send_chat_message,
+            inputs=[selected_portfolio_state, ai_chat, chat_input],
+            outputs=[ai_chat, chat_input],
         )
         get_llm_recommendation_button.click(
             fn=_get_llm_recommendation,
             inputs=[
                 selected_portfolio_state,
-                llm_answers,
+                ai_chat,
                 mode_toggle,
                 portfolio_view_filter,
             ],
@@ -645,7 +744,20 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
                 portfolio_status,
                 edit_rewritten_goals,
                 edit_strategy_recommendation,
+                llm_questions,
+                llm_timestamp_label,
                 portfolios_table,
+            ],
+        )
+        load_llm_from_db_button.click(
+            fn=_load_llm_from_db,
+            inputs=[selected_portfolio_state],
+            outputs=[
+                edit_rewritten_goals,
+                edit_strategy_recommendation,
+                llm_questions,
+                llm_answers,
+                llm_timestamp_label,
             ],
         )
         refresh_portfolios_button.click(
@@ -676,10 +788,15 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
         "edit_portfolio_active": edit_portfolio_active,
         "edit_rewritten_goals": edit_rewritten_goals,
         "edit_strategy_recommendation": edit_strategy_recommendation,
+        "llm_timestamp_label": llm_timestamp_label,
+        "llm_answers": llm_answers,
         "llm_questions": llm_questions,
         "create_portfolio_button": create_portfolio_button,
         "portfolio_view_filter": portfolio_view_filter,
         "portfolios_table": portfolios_table,
         "portfolio_assets_table": portfolio_assets_table,
         "refresh_portfolios_button": refresh_portfolios_button,
+        "advising_button": advising_button,
+        "ai_chat": ai_chat,
+        "chat_column": chat_column,
     }

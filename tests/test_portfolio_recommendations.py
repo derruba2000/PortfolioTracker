@@ -68,18 +68,24 @@ def test_generate_and_store_portfolio_recommendation(monkeypatch) -> None:
         goal_timeline="10+ years",
     )
 
-    status, rewritten_goals, recommendation = generate_and_store_portfolio_recommendation(
+    status, rewritten_goals, recommendation, profile = generate_and_store_portfolio_recommendation(
         "1 | Broker / ISA / Retirement",
-        "I want long-term growth and can tolerate moderate risk.",
+        [
+            {"role": "assistant", "content": "What is your risk tolerance?"},
+            {"role": "user", "content": "I want long-term growth and can tolerate moderate risk."},
+        ],
         post=lambda *args, **kwargs: _Response(),
     )
     details = portfolio_details("1 | Broker / ISA / Retirement")
 
-    assert "Stored LLM recommendation" in status
+    assert "Stored AI insights" in status
     assert rewritten_goals == "Retirement growth with controlled drawdowns."
     assert "balanced growth allocation" in recommendation
     assert details[6] == rewritten_goals
     assert details[7] == recommendation
+    assert details[8] == profile.strip()
+    assert "long-term growth" in details[9]  # ai_notes contains serialised chat
+    assert details[10] is not None  # llm_updated_at timestamp was set
     assert "risk tolerance" in start_portfolio_goal_conversation().lower()
 
 
@@ -121,7 +127,7 @@ def test_empty_portfolio_prompt_requests_target_asset_allocation(monkeypatch) ->
 
     prompt = _build_prompt(
         "1 | Broker / ISA / Empty",
-        "I want growth but no single-stock concentration.",
+        "Client: I want growth but no single-stock concentration.",
     )
 
     assert "Current symbols: None" in prompt

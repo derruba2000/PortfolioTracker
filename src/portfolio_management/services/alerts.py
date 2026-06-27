@@ -10,7 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from portfolio_management.config import load_settings
 from portfolio_management.db.models import (
     Account,
     Broker,
+    ImportErrorLog,
     PortfolioAlert,
     PriceHistory,
 )
@@ -110,6 +111,19 @@ def acknowledge_alerts(alert_hashes: Sequence[str] | None) -> int:
         )
         session.commit()
         return int(result.rowcount or 0)
+
+
+def purge_all_alerts() -> tuple[int, int]:
+    """Delete all rows from portfolio_alerts and import_error_logs.
+
+    Returns a tuple of (alerts_deleted, import_errors_deleted).
+    """
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        alerts_result = session.execute(delete(PortfolioAlert))
+        errors_result = session.execute(delete(ImportErrorLog))
+        session.commit()
+    return int(alerts_result.rowcount or 0), int(errors_result.rowcount or 0)
 
 
 def detect_price_drop(

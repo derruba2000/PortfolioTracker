@@ -8,6 +8,7 @@ from portfolio_management.services.alerts import (
     acknowledge_alerts,
     active_alert_choices,
     list_alerts,
+    purge_all_alerts,
 )
 
 
@@ -35,6 +36,15 @@ def acknowledge_selected_alerts(
     return status, active, historical, choices
 
 
+def purge_alert_data() -> tuple[str, object, object, object]:
+    alerts_deleted, errors_deleted = purge_all_alerts()
+    active, historical, choices = refresh_alerts()
+    status = (
+        f"Purged {alerts_deleted} alert(s) and {errors_deleted} import error log(s)."
+    )
+    return status, active, historical, choices
+
+
 def build_alerts_tab() -> dict[str, Any]:
     with gr.Tab("Alerts"):
         with gr.Row():
@@ -43,6 +53,7 @@ def build_alerts_tab() -> dict[str, Any]:
                 "Acknowledge Selected",
                 variant="primary",
             )
+            purge_button = gr.Button("Purge All Data", variant="stop")
         status = gr.Textbox(label="Status", interactive=False)
         active_table = gr.Dataframe(
             value=lambda: _alert_table(False),
@@ -75,6 +86,10 @@ def build_alerts_tab() -> dict[str, Any]:
             inputs=[selected_alerts],
             outputs=[status, active_table, historical_table, selected_alerts],
         )
+        purge_button.click(
+            fn=purge_alert_data,
+            outputs=[status, active_table, historical_table, selected_alerts],
+        )
 
     return {
         "active_table": active_table,
@@ -83,4 +98,5 @@ def build_alerts_tab() -> dict[str, Any]:
         "status": status,
         "refresh_button": refresh_button,
         "acknowledge_button": acknowledge_button,
+        "purge_button": purge_button,
     }

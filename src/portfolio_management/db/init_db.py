@@ -94,6 +94,12 @@ def migrate_sqlite_schema(engine: object) -> None:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN rewritten_goals TEXT"))
         if portfolio_columns and "strategy_recommendation" not in portfolio_columns:
             connection.execute(text("ALTER TABLE portfolios ADD COLUMN strategy_recommendation TEXT"))
+        if portfolio_columns and "portfolio_profile" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN portfolio_profile TEXT"))
+        if portfolio_columns and "ai_notes" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN ai_notes TEXT"))
+        if portfolio_columns and "llm_updated_at" not in portfolio_columns:
+            connection.execute(text("ALTER TABLE portfolios ADD COLUMN llm_updated_at DATETIME"))
         if portfolio_columns and "is_active" not in portfolio_columns:
             connection.execute(
                 text("ALTER TABLE portfolios ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")

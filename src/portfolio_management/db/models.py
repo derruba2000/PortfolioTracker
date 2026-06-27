@@ -108,6 +108,9 @@ class Portfolio(Base):
     goal_timeline: Mapped[str | None] = mapped_column(String(64))
     rewritten_goals: Mapped[str | None] = mapped_column(Text)
     strategy_recommendation: Mapped[str | None] = mapped_column(Text)
+    portfolio_profile: Mapped[str | None] = mapped_column(Text)
+    ai_notes: Mapped[str | None] = mapped_column(Text)
+    llm_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     account: Mapped[Account] = relationship(back_populates="portfolios")

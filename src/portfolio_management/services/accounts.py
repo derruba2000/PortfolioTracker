@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pandas as pd
 from sqlalchemy import select
@@ -386,16 +387,16 @@ def update_account(
 
 def portfolio_details(
     portfolio_choice: str | int | None,
-) -> tuple[str, str, str, list[str], str, str, str, str, bool]:
+) -> tuple[str, str, str, list[str], str, str, str, str, str, str, datetime | None, bool]:
     portfolio_id = parse_choice_id(portfolio_choice)
     if portfolio_id is None:
-        return "", "", "", [], "", "", "", "", True
+        return "", "", "", [], "", "", "", "", "", "", None, True
 
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolio = session.get(Portfolio, portfolio_id)
         if portfolio is None:
-            return "", "", "", [], "", "", "", "", True
+            return "", "", "", [], "", "", "", "", "", "", None, True
         return (
             portfolio.name,
             portfolio.description or "",
@@ -405,6 +406,9 @@ def portfolio_details(
             portfolio.goal_timeline or "",
             portfolio.rewritten_goals or "",
             portfolio.strategy_recommendation or "",
+            portfolio.portfolio_profile or "",
+            portfolio.ai_notes or "",
+            portfolio.llm_updated_at,
             bool(portfolio.is_active),
         )
 
@@ -695,6 +699,8 @@ def store_portfolio_recommendation(
     portfolio_choice: str | int | None,
     rewritten_goals: str,
     strategy_recommendation: str,
+    portfolio_profile: str = "",
+    ai_notes: str = "",
 ) -> str:
     portfolio_id = parse_choice_id(portfolio_choice)
     if portfolio_id is None:
@@ -707,9 +713,12 @@ def store_portfolio_recommendation(
             raise ValueError(f"Portfolio id {portfolio_id} does not exist.")
         portfolio.rewritten_goals = (rewritten_goals or "").strip() or None
         portfolio.strategy_recommendation = (strategy_recommendation or "").strip() or None
+        portfolio.portfolio_profile = (portfolio_profile or "").strip() or None
+        portfolio.ai_notes = (ai_notes or "").strip() or None
+        portfolio.llm_updated_at = datetime.now(UTC)
         session.commit()
 
-    return f"Stored LLM recommendation for portfolio '{portfolio.name}'."
+    return f"Stored AI insights for portfolio '{portfolio.name}'."
 
 
 def portfolio_choices_for_account(

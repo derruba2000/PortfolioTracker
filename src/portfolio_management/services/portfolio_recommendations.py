@@ -29,7 +29,7 @@ YAHOO_CONTEXT_TABLES = {
 
 
 def start_portfolio_goal_conversation(portfolio_choice: str | int | None = None) -> str:
-    name, description, _url, goals, goal_type, timeline, _rewritten, _recommendation, active = (
+    name, description, _url, goals, goal_type, timeline, _rewritten, _recommendation, _profile, _ai_notes, _llm_ts, active = (
         portfolio_details(portfolio_choice)
     )
     if not name:
@@ -50,13 +50,130 @@ Add anything not already captured above, such as risk tolerance, drawdown limits
 """
 
 
+def start_ai_conversation(portfolio_choice: str | int | None = None) -> str:
+    name, description, _url, goals, goal_type, timeline, _rewritten, _recommendation, _profile, _ai_notes, _llm_ts, active = (
+        portfolio_details(portfolio_choice)
+    )
+    if not name:
+        return "Select or save a portfolio first before starting an AI conversation."
+
+    symbols = _portfolio_symbols(portfolio_choice)
+
+    context_parts = [f"Portfolio name: {name}", f"Active: {'Yes' if active else 'No'}"]
+    if description:
+        context_parts.append(f"Description: {description}")
+    if goals:
+        context_parts.append(f"Goals: {', '.join(goals)}")
+    if goal_type:
+        context_parts.append(f"Goal type: {goal_type}")
+    if timeline:
+        context_parts.append(f"Timeline: {timeline}")
+    context_parts.append(
+        f"Current holdings: {', '.join(symbols)}" if symbols else "Current holdings: None (new portfolio)"
+    )
+
+    context = "\n".join(context_parts)
+    prompt = f"""You are an investment portfolio advisor reviewing a client profile. Based on the information below, identify 3-5 specific questions you need answered to make a personalised strategy recommendation. Only ask about information that is missing or unclear from the data below. Be direct and concise.
+
+Client portfolio profile:
+{context}
+
+Return a numbered list of questions only, with no introduction or closing remarks."""
+
+    try:
+        return _call_ollama(prompt)
+    except ValueError as exc:
+        return f"Could not generate questions: {exc}"
+
+
+def start_ai_chat(portfolio_choice: str | int | None = None) -> list[dict[str, str]]:
+    """Begin a fresh AI advising chat. Returns the initial message list with the advisor's opening questions."""
+    name, description, _url, goals, goal_type, timeline, rewritten, recommendation, _profile, _ai_notes, _llm_ts, active = (
+        portfolio_details(portfolio_choice)
+    )
+    if not name:
+        return [{"role": "assistant", "content": "Select or save a portfolio first before starting an AI conversation."}]
+
+    symbols = _portfolio_symbols(portfolio_choice)
+
+    context_parts = [f"Portfolio: {name}", f"Active: {'Yes' if active else 'No'}"]
+    if description:
+        context_parts.append(f"Description: {description}")
+    if goals:
+        context_parts.append(f"Goals: {', '.join(goals)}")
+    if goal_type:
+        context_parts.append(f"Goal type: {goal_type}")
+    if timeline:
+        context_parts.append(f"Timeline: {timeline}")
+    context_parts.append(
+        f"Current holdings: {', '.join(symbols)}" if symbols else "Current holdings: None (new portfolio)"
+    )
+
+    previous_ai_section = ""
+    if recommendation:
+        previous_ai_section = (
+            f"\n\nThis portfolio already has AI analysis on file. The client may want to refine or update it:\n"
+            f"Previous rewritten goals: {rewritten or 'None'}\n"
+            f"Previous recommendation (excerpt): {recommendation[:400]}"
+        )
+
+    context = "\n".join(context_parts)
+    prompt = (
+        f"You are an investment portfolio advisor starting a conversation with a client. "
+        f"Based on the portfolio profile below, ask 3 to 5 focused questions to gather the information needed "
+        f"for a personalised strategy recommendation. Only ask about what is missing or unclear. "
+        f"Be direct and conversational. Do not use markdown formatting, bullet symbols, or bold text.\n\n"
+        f"Client portfolio profile:\n{context}{previous_ai_section}\n\n"
+        f"Write a brief warm opening sentence, then list your numbered questions."
+    )
+
+    try:
+        opening = _call_ollama(prompt)
+        return [{"role": "assistant", "content": opening}]
+    except ValueError as exc:
+        return [{"role": "assistant", "content": f"Could not start AI conversation: {exc}"}]
+
+
+def continue_ai_chat(
+    portfolio_choice: str | int | None,
+    history: list[dict[str, str]],
+    user_message: str,
+) -> list[dict[str, str]]:
+    """Append the user message, call the LLM for a follow-up, and return the updated history."""
+    updated: list[dict[str, str]] = list(history) + [{"role": "user", "content": user_message}]
+
+    name, description, _url, goals, *_rest = portfolio_details(portfolio_choice)
+    portfolio_label = name or "the selected portfolio"
+
+    conversation_text = "\n\n".join(
+        f"{'Client' if msg['role'] == 'user' else 'Advisor'}: {msg['content']}"
+        for msg in updated
+    )
+
+    prompt = (
+        f"You are an investment portfolio advisor in an ongoing conversation about {portfolio_label}.\n\n"
+        f"Conversation so far:\n{conversation_text}\n\n"
+        f"Continue the conversation. If you still need more information to make a good recommendation, "
+        f"ask one or two focused follow-up questions. If you have enough context, acknowledge this and "
+        f"let the client know they can click Get AI Recommendations. "
+        f"Keep your response concise. Do not use markdown formatting, bullet symbols, or bold text."
+    )
+
+    try:
+        response = _call_ollama(prompt)
+    except ValueError as exc:
+        response = f"Error getting response: {exc}"
+
+    return updated + [{"role": "assistant", "content": response}]
+
+
 def generate_and_store_portfolio_recommendation(
     portfolio_choice: str | int | None,
-    user_answers: str,
+    chat_history: list[dict[str, str]],
     post: Any = requests.post,
-) -> tuple[str, str, str]:
-    clean_answers = (user_answers or "").strip()
-    if not clean_answers:
+) -> tuple[str, str, str, str]:
+    chat_text = _chat_history_to_text(chat_history)
+    if not chat_text:
         name, description, _url, goals, goal_type, timeline, *_rest = portfolio_details(
             portfolio_choice
         )
@@ -64,20 +181,23 @@ def generate_and_store_portfolio_recommendation(
             raise ValueError(
                 "Add a portfolio description, goals, goal type, or timeline before requesting a recommendation."
             )
-        clean_answers = f"Use the saved portfolio profile for {name or 'this portfolio'}."
+        chat_text = f"Use the saved portfolio profile for {name or 'this portfolio'}."
 
-    prompt = _build_prompt(portfolio_choice, clean_answers)
+    prompt = _build_prompt(portfolio_choice, chat_text)
     recommendation = _call_ollama(prompt, post=post)
     rewritten_goals = _extract_section(recommendation, "Rewritten goals") or _fallback_rewritten_goals(
         portfolio_choice,
-        clean_answers,
+        chat_text,
     )
+    profile = _extract_section(recommendation, "Portfolio profile") or start_portfolio_goal_conversation(portfolio_choice)
     status = store_portfolio_recommendation(
         portfolio_choice,
         rewritten_goals=rewritten_goals,
         strategy_recommendation=recommendation,
+        portfolio_profile=profile,
+        ai_notes=chat_text,
     )
-    return status, rewritten_goals, recommendation
+    return status, rewritten_goals, recommendation, profile
 
 
 def _call_ollama(prompt: str, post: Any = requests.post) -> str:
@@ -105,8 +225,8 @@ def _call_ollama(prompt: str, post: Any = requests.post) -> str:
     return recommendation
 
 
-def _build_prompt(portfolio_choice: str | int | None, user_answers: str) -> str:
-    name, description, _url, goals, goal_type, timeline, _rewritten, _recommendation, active = (
+def _build_prompt(portfolio_choice: str | int | None, chat_context: str) -> str:
+    name, description, _url, goals, goal_type, timeline, rewritten, recommendation, _profile, _ai_notes, _llm_ts, active = (
         portfolio_details(portfolio_choice)
     )
     symbols = _portfolio_symbols(portfolio_choice)
@@ -120,8 +240,16 @@ def _build_prompt(portfolio_choice: str | int | None, user_answers: str) -> str:
             "user answers. Do not require tickers to be present before proposing the allocation."
         )
     )
+    previous_ai_section = ""
+    if recommendation:
+        previous_ai_section = f"""
+Previous AI analysis on file:
+Rewritten goals: {rewritten or "None"}
+Previous recommendation: {recommendation}
+"""
     return f"""
 You are an investment portfolio strategy assistant. This is analysis support, not financial advice.
+Do not use markdown formatting, bullet symbols, asterisks, or bold text in your response. Write in plain prose.
 
 Portfolio:
 - Name: {name or "Unknown"}
@@ -132,20 +260,32 @@ Portfolio:
 - Timeline: {timeline or "None"}
 - Current symbols: {", ".join(symbols) if symbols else "None"}
 - Analysis mode: {analysis_mode}
-
-User answers:
-{user_answers}
+{previous_ai_section}
+Conversation with client:
+{chat_context}
 
 Available market/fund/security context from the local database:
 {json.dumps(yahoo_context, indent=2, default=str)}
 
-Return a concise response with these headings:
+Write a plain-text response with each of these headings on its own line followed by the content:
 Rewritten goals:
+Portfolio profile:
 Recommended strategy:
 Suggested asset allocation:
 Why:
 Risks and caveats:
 """.strip()
+
+
+def _chat_history_to_text(history: list[dict[str, str]]) -> str:
+    """Convert a Gradio-format chat history to a readable plain-text conversation string."""
+    if not history:
+        return ""
+    lines = []
+    for msg in history:
+        role = "Client" if msg.get("role") == "user" else "AI Advisor"
+        lines.append(f"{role}: {msg.get('content', '')}")
+    return "\n\n".join(lines)
 
 
 def _portfolio_symbols(portfolio_choice: str | int | None) -> list[str]:
@@ -207,8 +347,8 @@ def _extract_section(text_value: str, heading: str) -> str:
     return "\n".join(collected).strip()
 
 
-def _fallback_rewritten_goals(portfolio_choice: str | int | None, user_answers: str) -> str:
-    _name, _description, _url, goals, goal_type, timeline, _rewritten, _recommendation, _active = (
+def _fallback_rewritten_goals(portfolio_choice: str | int | None, chat_context: str) -> str:
+    _name, _description, _url, goals, goal_type, timeline, _rewritten, _recommendation, _profile, _ai_notes, _llm_ts, _active = (
         portfolio_details(portfolio_choice)
     )
     parts = []
@@ -218,5 +358,5 @@ def _fallback_rewritten_goals(portfolio_choice: str | int | None, user_answers: 
         parts.append(f"Goal type: {goal_type}")
     if timeline:
         parts.append(f"Timeline: {timeline}")
-    parts.append(f"User objectives: {user_answers}")
+    parts.append(f"User objectives from conversation: {chat_context}")
     return "\n".join(parts)
