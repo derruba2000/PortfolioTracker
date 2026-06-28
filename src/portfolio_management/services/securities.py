@@ -6,7 +6,7 @@ import pandas as pd
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
-from portfolio_management.db.models import AssetClass, PriceHistory, Security
+from portfolio_management.db.models import AssetClass, AssetClassOption, PriceHistory, Security
 from portfolio_management.db.session import get_engine, get_session_factory
 from portfolio_management.services.reference_data import ensure_currency_code, is_known_asset_class
 
@@ -127,14 +127,20 @@ def list_security_tickers() -> list[str]:
     return list(tickers)
 
 
-def list_asset_class_filter_choices() -> list[str]:
-    """Return asset class values present in the securities table, prefixed with 'All'."""
+def list_asset_class_filter_choices() -> list[tuple[str, str]]:
+    """Return (name, code) tuples from the asset_classes table ordered by display_order.
+
+    The first entry is ("All", "All"). The name is shown in the dropdown;
+    the code is used for filtering securities.
+    """
     session_factory = get_session_factory()
     with session_factory() as session:
-        classes = session.scalars(
-            select(Security.asset_class).distinct().order_by(Security.asset_class)
+        rows = session.scalars(
+            select(AssetClassOption).order_by(AssetClassOption.display_order, AssetClassOption.name)
         ).all()
-    return ["All"] + [ac.value for ac in classes]
+    choices: list[tuple[str, str]] = [("All", "All")]
+    choices += [(row.name, row.code) for row in rows]
+    return choices
 
 
 def list_security_tickers_by_asset_class(asset_class: str | None) -> list[str]:
