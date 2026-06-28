@@ -101,9 +101,10 @@ def _mode_changed(
     account_mode: str,
     reporting_currency: str,
     tax_year: str,
+    active_only: bool = True,
 ) -> tuple[object, ...]:
     return (
-        *dashboard_scope_changed(account_mode, reporting_currency),
+        *dashboard_scope_changed(account_mode, reporting_currency, active_only=active_only),
         _refresh_tax_report(tax_year, account_mode),
     )
 
@@ -172,6 +173,10 @@ def build_app() -> gr.Blocks:
                     choices=APP_ACCOUNT_MODE_CHOICES,
                     value=LIVE_MODE,
                 )
+                active_only_checkbox = gr.Checkbox(
+                    label="Active portfolios only",
+                    value=True,
+                )
 
         # ── Build each tab ────────────────────────────────────────────────
         dashboard = build_dashboard_tab()
@@ -187,7 +192,7 @@ def build_app() -> gr.Blocks:
             with gr.Tabs():
                 brokers = build_brokers_tab()
                 accounts = build_accounts_tab(selected_account, mode_toggle)
-                portfolios = build_portfolios_tab(selected_account, mode_toggle)
+                portfolios = build_portfolios_tab(selected_account, mode_toggle, active_only_checkbox)
                 build_securities_tab()
         data_entry = build_data_entry_tab(selected_account, selected_portfolio, mode_toggle)
         performance = build_performance_tab(mode_toggle)
@@ -281,6 +286,7 @@ def build_app() -> gr.Blocks:
                 portfolios["edit_portfolio_active"],
                 mode_toggle,
                 portfolios["portfolio_view_filter"],
+                active_only_checkbox,
             ],
             outputs=[
                 portfolios["portfolio_status"],
@@ -301,7 +307,7 @@ def build_app() -> gr.Blocks:
         # ── Cross-tab: Mode toggle (dashboard + performance + tax) ────────
         mode_toggle.change(
             fn=_mode_changed,
-            inputs=[mode_toggle, reporting_currency, tax["tax_year"]],
+            inputs=[mode_toggle, reporting_currency, tax["tax_year"], active_only_checkbox],
             outputs=[
                 dashboard_portfolio_filter,
                 positions_account_filter,
@@ -352,7 +358,7 @@ def build_app() -> gr.Blocks:
         )
         mode_toggle.change(
             fn=portfolios_mode_changed,
-            inputs=[mode_toggle],
+            inputs=[mode_toggle, active_only_checkbox],
             outputs=[
                 portfolios["portfolio_account_choice"],
                 portfolios["new_portfolio_name"],
@@ -388,7 +394,7 @@ def build_app() -> gr.Blocks:
         )
         mode_toggle.change(
             fn=_export_scope_changed,
-            inputs=[mode_toggle],
+            inputs=[mode_toggle, active_only_checkbox],
             outputs=[import_export["export_portfolio_filter"]],
         )
         reporting_currency.change(
@@ -462,6 +468,54 @@ def build_app() -> gr.Blocks:
                 positions_asset_class_filter,
             ],
             outputs=[dashboard["positions_table"]],
+        )
+
+        # ── Active-only checkbox: refresh portfolio dropdowns / tables ────
+        active_only_checkbox.change(
+            fn=_mode_changed,
+            inputs=[mode_toggle, reporting_currency, tax["tax_year"], active_only_checkbox],
+            outputs=[
+                dashboard_portfolio_filter,
+                positions_account_filter,
+                positions_portfolio_filter,
+                positions_asset_class_filter,
+                mode_banner_html,
+                dashboard["summary_table"],
+                dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
+                tax["tax_report"],
+            ],
+        )
+        active_only_checkbox.change(
+            fn=portfolios_mode_changed,
+            inputs=[mode_toggle, active_only_checkbox],
+            outputs=[
+                portfolios["portfolio_account_choice"],
+                portfolios["new_portfolio_name"],
+                portfolios["edit_portfolio_choice"],
+                portfolios["new_portfolio_description"],
+                portfolios["new_portfolio_url"],
+                portfolios["new_portfolio_goals"],
+                portfolios["new_goal_type"],
+                portfolios["new_goal_timeline"],
+                portfolios["edit_rewritten_goals"],
+                portfolios["edit_strategy_recommendation"],
+                portfolios["edit_portfolio_active"],
+                portfolios["llm_timestamp_label"],
+                portfolios["llm_answers"],
+                portfolios["llm_questions"],
+                portfolios["chat_column"],
+                portfolios["ai_chat"],
+                portfolios["portfolio_view_filter"],
+                portfolios["portfolios_table"],
+                portfolios["portfolio_assets_table"],
+            ],
+        )
+        active_only_checkbox.change(
+            fn=_export_scope_changed,
+            inputs=[mode_toggle, active_only_checkbox],
+            outputs=[import_export["export_portfolio_filter"]],
         )
 
     return app

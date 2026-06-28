@@ -132,9 +132,9 @@ def _import_market_data(prices_path: str, fx_path: str) -> tuple[str, str, str]:
         return prices_clean, fx_clean, f"Could not merge market data: {exc}"
 
 
-def _export_scope_changed(account_mode: str) -> object:
+def _export_scope_changed(account_mode: str, active_only: bool = True) -> object:
     return gr.update(
-        choices=portfolio_filter_choices(account_mode),
+        choices=portfolio_filter_choices(account_mode, active_only=active_only),
         value=ALL_PORTFOLIOS,
     )
 

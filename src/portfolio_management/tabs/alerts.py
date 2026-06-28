@@ -53,7 +53,7 @@ def build_alerts_tab() -> dict[str, Any]:
                 "Acknowledge Selected",
                 variant="primary",
             )
-            purge_button = gr.Button("Purge All Data", variant="stop")
+            purge_button = gr.Button("Purge All Errors and Alert Logs", variant="stop")
         status = gr.Textbox(label="Status", interactive=False)
         active_table = gr.Dataframe(
             value=lambda: _alert_table(False),

@@ -42,11 +42,11 @@ def _portfolios() -> pd.DataFrame:
 def test_portfolio_filter_is_shared_by_portfolio_table(monkeypatch) -> None:
     monkeypatch.setattr(
         "portfolio_management.tabs.portfolios.list_portfolios",
-        lambda _: _portfolios(),
+        lambda _filter, **_kwargs: _portfolios(),
     )
 
-    choices = portfolio_view_choices("All")
-    table = portfolios_table_data("All", choices[1])
+    choices = portfolio_view_choices("All", active_only=False)
+    table = portfolios_table_data("All", choices[1], active_only=False)
 
     assert choices == [
         ALL_MASTER_PORTFOLIOS,

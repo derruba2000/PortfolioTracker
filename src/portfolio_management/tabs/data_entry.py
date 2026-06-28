@@ -18,7 +18,13 @@ from portfolio_management.services.transactions import (
     transfer_cash,
 )
 from portfolio_management.services.reference_data import list_currency_codes
-from portfolio_management.services.securities import get_security_defaults, list_security_tickers
+from portfolio_management.services.securities import (
+    get_security_defaults,
+    get_ticker_price_and_trend,
+    list_asset_class_filter_choices,
+    list_security_tickers,
+    list_security_tickers_by_asset_class,
+)
 from portfolio_management.tabs._shared import (
     as_date_table,
     format_decimal_input,
@@ -70,18 +76,70 @@ def _ticker_choices() -> list[str]:
     return list_security_tickers()
 
 
+_PRICE_TREND_CSS = """
+<style>
+@keyframes blink-green {
+  0%, 100% { background: #16a34a; }
+  50% { background: #4ade80; }
+}
+@keyframes blink-red {
+  0%, 100% { background: #dc2626; }
+  50% { background: #f87171; }
+}
+</style>"""
+
+
+def _build_price_trend_html(trend: str, price_str: str) -> str:
+    if not price_str or trend == "none":
+        return ""
+    if trend == "up":
+        color, arrow, anim = "#16a34a", "▲", "blink-green 1s ease-in-out 4"
+    elif trend == "down":
+        color, arrow, anim = "#dc2626", "▼", "blink-red 1s ease-in-out 4"
+    else:
+        color, arrow, anim = "#6b7280", "─", ""
+
+    blink = f"animation:{anim};" if anim else ""
+    style = (
+        f"background:{color};color:white;padding:3px 10px;"
+        f"border-radius:4px;font-weight:bold;font-size:0.9em;{blink}"
+    )
+    return f'{_PRICE_TREND_CSS}<span style="{style}">{arrow} {price_str}</span>'
+
+
+def _asset_class_changed(asset_class: str) -> object:
+    tickers = list_security_tickers_by_asset_class(asset_class)
+    return gr.update(choices=tickers, value=None)
+
+
+def _build_ticker_link_html(ticker: str) -> str:
+    clean_ticker = (ticker or "").strip().upper()
+    if not clean_ticker:
+        return ""
+    link = ticker_link(clean_ticker)
+    return (
+        f'<div style="margin-top:4px;font-size:0.85em;">'
+        f"📊 {link}"
+        f"</div>"
+    )
+
+
 def _ticker_changed(
     ticker: str,
-    current_description: str,
-    current_currency: str,
-) -> tuple[str, str]:
+    current_quantity: str,
+) -> tuple:
     description, _asset_class, currency = get_security_defaults(
         ticker=ticker,
-        current_description=current_description,
+        current_description="",
         current_asset_class="EQUITY",
-        current_currency=current_currency,
+        current_currency="",
     )
-    return description, currency
+    currency_update = gr.update(value=currency) if currency else gr.update()
+    price_str, trend = get_ticker_price_and_trend(ticker)
+    price_html = _build_price_trend_html(trend, price_str)
+    total = _auto_total_value(current_quantity, price_str, "")
+    ticker_html = _build_ticker_link_html(ticker)
+    return description, currency_update, price_str, price_html, total, ticker_html
 
 
 def _account_choices_for_mode(account_mode: str) -> list[str]:
@@ -221,12 +279,19 @@ def build_data_entry_tab(
                         choices=[tt.value for tt in TransactionType],
                         value=TransactionType.BUY.value,
                     )
+                    asset_class_filter = gr.Dropdown(
+                        label="Asset Class",
+                        choices=list_asset_class_filter_choices(),
+                        value="All",
+                        allow_custom_value=False,
+                    )
                     ticker = gr.Dropdown(
                         label="Ticker",
                         choices=_ticker_choices(),
                         allow_custom_value=True,
                         value=None,
                     )
+                ticker_link_html = gr.HTML(value="")
                 transaction_description = gr.Textbox(label="Description", lines=2)
 
                 with gr.Row():
@@ -242,6 +307,7 @@ def build_data_entry_tab(
                     quantity = gr.Textbox(label="Quantity", value="0")
                     price = gr.Textbox(label="Price", value="0")
                     fees = gr.Textbox(label="Fees", value="0")
+                price_trend_html = gr.HTML(value="")
                 quantity.input(fn=format_quantity_input, inputs=[quantity], outputs=[quantity])
                 price.input(fn=format_decimal_input, inputs=[price], outputs=[price])
                 fees.input(fn=format_decimal_input, inputs=[fees], outputs=[fees])
@@ -258,10 +324,15 @@ def build_data_entry_tab(
                 csv_file = gr.File(label="CSV Import", file_types=[".csv"])
                 import_button = gr.Button("Import CSV")
 
+                asset_class_filter.change(
+                    fn=_asset_class_changed,
+                    inputs=[asset_class_filter],
+                    outputs=[ticker],
+                )
                 ticker.change(
                     fn=_ticker_changed,
-                    inputs=[ticker, security_name, security_currency_code],
-                    outputs=[security_name, security_currency_code],
+                    inputs=[ticker, quantity],
+                    outputs=[security_name, security_currency_code, price, price_trend_html, total_value, ticker_link_html],
                 )
 
                 txns_table = gr.Dataframe(

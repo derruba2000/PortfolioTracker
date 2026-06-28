@@ -138,8 +138,8 @@ def _portfolio_form_details(portfolio_choice: str | int | None) -> tuple[Any, ..
         description,
         url,
         goals,
-        goal_type,
-        timeline,
+        goal_type or None,   # Dropdown: empty string → None to avoid "not in choices" error
+        timeline or None,    # Dropdown: same
         rewritten,
         recommendation,
         active,
@@ -208,6 +208,7 @@ def save_portfolio_callback(
     is_active: bool,
     account_mode: str = LIVE_MODE,
     portfolio_view_choice: str | int | None = None,
+    active_only: bool = True,
 ) -> tuple[Any, ...]:
     portfolio_id = parse_choice_id(portfolio_choice)
     try:
@@ -237,7 +238,7 @@ def save_portfolio_callback(
 
     names = _portfolio_name_choices_for_account(account_choice)
     selected_choice = _portfolio_choice_for_name(account_choice, portfolio_name)
-    choices = portfolio_view_choices_for_mode(account_mode)
+    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
     selected_view = _portfolio_view_choice_for_id(
         choices,
         parse_choice_id(selected_choice) or _parse_portfolio_view_id(portfolio_view_choice),
@@ -263,14 +264,14 @@ def save_portfolio_callback(
         llm_timestamp,
         ai_notes_val,
         gr.update(choices=choices, value=selected_view),
-        portfolios_table_data(account_mode, selected_view),
+        portfolios_table_data(account_mode, selected_view, active_only=active_only),
         portfolio_assets_table_data(selected_view),
     )
 
 
-def portfolio_view_choices_for_mode(account_mode: str = LIVE_MODE) -> list[str]:
+def portfolio_view_choices_for_mode(account_mode: str = LIVE_MODE, active_only: bool = True) -> list[str]:
     portfolios_filter = account_mode_to_table_filter(account_mode)
-    portfolios = list_portfolios(portfolios_filter)
+    portfolios = list_portfolios(portfolios_filter, active_only=active_only)
     choices = [ALL_MASTER_PORTFOLIOS]
     if not isinstance(portfolios, pd.DataFrame):
         return choices
@@ -281,8 +282,8 @@ def portfolio_view_choices_for_mode(account_mode: str = LIVE_MODE) -> list[str]:
     return choices
 
 
-def portfolio_view_choices(account_filter: str = "Real") -> list[str]:
-    portfolios = list_portfolios(account_filter)
+def portfolio_view_choices(account_filter: str = "Real", active_only: bool = True) -> list[str]:
+    portfolios = list_portfolios(account_filter, active_only=active_only)
     choices = [ALL_MASTER_PORTFOLIOS]
     if not isinstance(portfolios, pd.DataFrame):
         return choices
@@ -296,9 +297,10 @@ def portfolio_view_choices(account_filter: str = "Real") -> list[str]:
 def portfolios_table_data(
     account_mode: str = LIVE_MODE,
     portfolio_view_choice: str | int | None = None,
+    active_only: bool = True,
 ) -> object:
     portfolios_filter = account_mode_to_table_filter(account_mode)
-    portfolios = list_portfolios(portfolios_filter)
+    portfolios = list_portfolios(portfolios_filter, active_only=active_only)
     portfolio_id = _parse_portfolio_view_id(portfolio_view_choice)
     if (
         portfolio_id is not None
@@ -378,16 +380,16 @@ def _portfolio_view_choice_for_id(
     )
 
 
-def _portfolio_scope_changed(account_mode: str) -> tuple[Any, ...]:
-    choices = portfolio_view_choices_for_mode(account_mode)
+def _portfolio_scope_changed(account_mode: str, active_only: bool = True) -> tuple[Any, ...]:
+    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
     return (
         gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
-        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS),
+        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS, active_only=active_only),
         portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
     )
 
 
-def portfolios_mode_changed(account_mode: str) -> tuple[Any, ...]:
+def portfolios_mode_changed(account_mode: str, active_only: bool = True) -> tuple[Any, ...]:
     accounts = account_choices(include_simulated=True, account_mode=account_mode)
     selected_account = accounts[0] if accounts else None
     portfolio_names = _portfolio_name_choices_for_account(selected_account)
@@ -398,13 +400,13 @@ def portfolios_mode_changed(account_mode: str) -> tuple[Any, ...]:
         if selected_choice
         else _blank_portfolio_form()
     )
-    choices = portfolio_view_choices_for_mode(account_mode)
+    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
     return (
         gr.update(choices=accounts, value=selected_account),
         gr.update(choices=portfolio_names, value=selected_name),
         *details[1:],
         gr.update(choices=choices, value=ALL_MASTER_PORTFOLIOS),
-        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS),
+        portfolios_table_data(account_mode, ALL_MASTER_PORTFOLIOS, active_only=active_only),
         portfolio_assets_table_data(ALL_MASTER_PORTFOLIOS),
     )
 
@@ -422,15 +424,16 @@ def _portfolio_view_changed(
 def _refresh_portfolio_view(
     account_mode: str,
     portfolio_view_choice: str | int | None,
+    active_only: bool = True,
 ) -> tuple[Any, ...]:
-    choices = portfolio_view_choices_for_mode(account_mode)
+    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
     selected_view = _portfolio_view_choice_for_id(
         choices,
         _parse_portfolio_view_id(portfolio_view_choice),
     )
     return (
         gr.update(choices=choices, value=selected_view),
-        portfolios_table_data(account_mode, selected_view),
+        portfolios_table_data(account_mode, selected_view, active_only=active_only),
         portfolio_assets_table_data(selected_view),
     )
 
@@ -488,7 +491,11 @@ def _load_llm_from_db(portfolio_choice: str | int | None) -> tuple[Any, ...]:
     return rewritten, recommendation, profile, ai_notes, llm_timestamp
 
 
-def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) -> dict[str, Any]:
+def build_portfolios_tab(
+    selected_account: str | None,
+    mode_toggle: gr.Radio,
+    active_only_checkbox: gr.Checkbox,
+) -> dict[str, Any]:
     with gr.Tab("Portfolios"):
         portfolio_status = gr.Textbox(label="Status", interactive=False)
         initial_portfolio_names = _portfolio_name_choices_for_account(selected_account)
@@ -609,13 +616,13 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
         with gr.Row():
             portfolio_view_filter = gr.Dropdown(
                 label="Portfolio",
-                choices=portfolio_view_choices_for_mode(LIVE_MODE),
+                choices=portfolio_view_choices_for_mode(LIVE_MODE, active_only=True),
                 value=ALL_MASTER_PORTFOLIOS,
                 allow_custom_value=False,
                 filterable=True,
             )
         portfolios_table = gr.Dataframe(
-            value=lambda: portfolios_table_data(LIVE_MODE),
+            value=lambda: portfolios_table_data(LIVE_MODE, active_only=True),
             headers=[
                 "ID",
                 "Broker",
@@ -762,7 +769,7 @@ def build_portfolios_tab(selected_account: str | None, mode_toggle: gr.Radio) ->
         )
         refresh_portfolios_button.click(
             fn=_refresh_portfolio_view,
-            inputs=[mode_toggle, portfolio_view_filter],
+            inputs=[mode_toggle, portfolio_view_filter, active_only_checkbox],
             outputs=[
                 portfolio_view_filter,
                 portfolios_table,

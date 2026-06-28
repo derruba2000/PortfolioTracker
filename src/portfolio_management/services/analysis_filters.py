@@ -22,7 +22,7 @@ def account_mode_to_table_filter(account_mode: str) -> str:
     return "Real"
 
 
-def portfolio_filter_choices(account_mode: str) -> list[str]:
+def portfolio_filter_choices(account_mode: str, active_only: bool = True) -> list[str]:
     session_factory = get_session_factory()
     with session_factory() as session:
         statement = (
@@ -31,9 +31,10 @@ def portfolio_filter_choices(account_mode: str) -> list[str]:
             .join(Account.broker)
             .where(Broker.is_active.is_(True))
             .where(Account.is_active.is_(True))
-            .where(Portfolio.is_active.is_(True))
             .order_by(Broker.name, Account.name, Portfolio.name)
         )
+        if active_only:
+            statement = statement.where(Portfolio.is_active.is_(True))
         if account_mode == SANDBOX_MODE:
             statement = statement.where(Account.is_simulated.is_(True))
         elif account_mode == LIVE_MODE:

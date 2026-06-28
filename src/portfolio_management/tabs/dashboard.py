@@ -185,8 +185,9 @@ def refresh_dashboard(
 def dashboard_scope_changed(
     account_mode: str,
     reporting_currency: str,
+    active_only: bool = True,
 ) -> tuple[Any, ...]:
-    choices = portfolio_filter_choices(account_mode)
+    choices = portfolio_filter_choices(account_mode, active_only=active_only)
     account_choices, position_portfolio_choices, asset_class_choices = (
         dashboard_position_filter_choices(
             account_mode,

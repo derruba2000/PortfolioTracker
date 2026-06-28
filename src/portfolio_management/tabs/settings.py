@@ -3,8 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 import gradio as gr
+import pandas as pd
 
 from portfolio_management.config import DEFAULT_THEME_NAME, load_settings, save_settings
+from portfolio_management.services.accounts import (
+    delete_portfolios_with_transactions,
+    list_portfolios_with_transactions,
+)
 
 
 THEME_CHOICES = ["Base", "Soft", "Monochrome", "Glass", "Ocean"]
@@ -23,6 +28,32 @@ def _save_market_data_paths(prices_path: str, fx_path: str) -> str:
     prices = updated.market_prices_delta_path or "(not set)"
     fx_rates = updated.fx_rates_delta_path or "(not set)"
     return f"Saved market prices path: {prices}\nSaved FX rates path: {fx_rates}"
+
+
+def _preview_portfolios_to_delete() -> tuple[object, str, object]:
+    df = list_portfolios_with_transactions()
+    if df.empty:
+        return (
+            df,
+            "No empty portfolios found — nothing to delete.",
+            gr.update(visible=False),
+        )
+    count = len(df)
+    return (
+        df,
+        f"Found {count} portfolio(s) with no transactions. Review the list below, then click Confirm Delete to permanently remove them.",
+        gr.update(visible=True),
+    )
+
+
+def _confirm_delete_portfolios() -> tuple[object, str, object]:
+    portfolios_deleted, _ = delete_portfolios_with_transactions()
+    if portfolios_deleted == 0:
+        msg = "No portfolios were deleted."
+    else:
+        msg = f"Deleted {portfolios_deleted} empty portfolio(s)."
+    empty_df = pd.DataFrame(columns=["ID", "Broker", "Account", "Portfolio", "Active"])
+    return empty_df, msg, gr.update(visible=False)
 
 
 def build_settings_tab() -> dict[str, Any]:
@@ -81,6 +112,35 @@ def build_settings_tab() -> dict[str, Any]:
             outputs=[market_data_paths_status],
         )
 
+        gr.Markdown("### Data Management")
+        delete_status = gr.Textbox(label="Status", interactive=False)
+        preview_delete_button = gr.Button(
+            "List portfolios with no transactions (preview deletion)",
+            variant="secondary",
+        )
+        portfolios_to_delete_table = gr.Dataframe(
+            headers=["ID", "Broker", "Account", "Portfolio", "Active"],
+            datatype=["number", "str", "str", "str", "str"],
+            label="Portfolios to be deleted",
+            interactive=False,
+            visible=True,
+            value=pd.DataFrame(columns=["ID", "Broker", "Account", "Portfolio", "Active"]),
+        )
+        confirm_delete_button = gr.Button(
+            "Confirm — Delete all listed empty portfolios",
+            variant="stop",
+            visible=False,
+        )
+
+        preview_delete_button.click(
+            fn=_preview_portfolios_to_delete,
+            outputs=[portfolios_to_delete_table, delete_status, confirm_delete_button],
+        )
+        confirm_delete_button.click(
+            fn=_confirm_delete_portfolios,
+            outputs=[portfolios_to_delete_table, delete_status, confirm_delete_button],
+        )
+
     return {
         "theme_choice": theme_choice,
         "theme_status": theme_status,
@@ -90,3 +150,4 @@ def build_settings_tab() -> dict[str, Any]:
         "market_data_paths_status": market_data_paths_status,
         "save_market_data_paths_button": save_market_data_paths_button,
     }
+

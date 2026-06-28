@@ -4,10 +4,10 @@ import json
 from datetime import UTC, datetime
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from portfolio_management.db.models import Account, Broker, Portfolio
+from portfolio_management.db.models import Account, Broker, Portfolio, Transaction
 from portfolio_management.db.session import get_session_factory
 
 
@@ -641,7 +641,7 @@ def list_accounts(account_filter: str = "All") -> pd.DataFrame:
     )
 
 
-def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
+def list_portfolios(account_filter: str = "All", active_only: bool = True) -> pd.DataFrame:
     session_factory = get_session_factory()
     with session_factory() as session:
         stmt = (
@@ -654,6 +654,8 @@ def list_portfolios(account_filter: str = "All") -> pd.DataFrame:
             stmt = stmt.where(Account.is_simulated.is_(False))
         elif account_filter == "Test":
             stmt = stmt.where(Account.is_simulated.is_(True))
+        if active_only:
+            stmt = stmt.where(Portfolio.is_active.is_(True))
         rows = session.execute(stmt).all()
 
     return pd.DataFrame(
@@ -783,3 +785,59 @@ def _find_account_choice(broker_name: str, account_name: str) -> str:
         if f"{broker_name.strip()} / {account_name.strip()}" in choice:
             return choice
     raise ValueError(f"Account '{account_name}' does not exist.")
+
+
+def list_portfolios_with_transactions() -> pd.DataFrame:
+    """Return all portfolios that have NO transactions, for preview before deletion."""
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = session.execute(
+            select(Portfolio, Account, Broker)
+            .join(Portfolio.account)
+            .join(Account.broker)
+            .where(
+                Portfolio.id.not_in(
+                    select(Transaction.portfolio_id).distinct()
+                )
+            )
+            .order_by(Broker.name, Account.name, Portfolio.name)
+        ).all()
+    return pd.DataFrame(
+        [
+            {
+                "ID": portfolio.id,
+                "Broker": broker.name,
+                "Account": account.name,
+                "Portfolio": portfolio.name,
+                "Active": "Yes" if portfolio.is_active else "No",
+            }
+            for portfolio, account, broker in rows
+        ],
+        columns=["ID", "Broker", "Account", "Portfolio", "Active"],
+    )
+
+
+def delete_portfolios_with_transactions() -> tuple[int, int]:
+    """Delete all portfolios that have NO transactions.
+
+    Returns (portfolios_deleted, transactions_deleted) — transactions_deleted will always be 0.
+    """
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio_ids = list(
+            session.scalars(
+                select(Portfolio.id).where(
+                    Portfolio.id.not_in(
+                        select(Transaction.portfolio_id).distinct()
+                    )
+                )
+            ).all()
+        )
+        if not portfolio_ids:
+            return 0, 0
+        port_result = session.execute(
+            delete(Portfolio).where(Portfolio.id.in_(portfolio_ids))
+        )
+        session.commit()
+    return int(port_result.rowcount or 0), 0
+

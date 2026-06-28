@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pandas as pd
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
-from portfolio_management.db.models import AssetClass, Security
+from portfolio_management.db.models import AssetClass, PriceHistory, Security
 from portfolio_management.db.session import get_engine, get_session_factory
 from portfolio_management.services.reference_data import ensure_currency_code, is_known_asset_class
 
@@ -123,6 +125,68 @@ def list_security_tickers() -> list[str]:
     with session_factory() as session:
         tickers = session.scalars(select(Security.ticker).order_by(Security.ticker)).all()
     return list(tickers)
+
+
+def list_asset_class_filter_choices() -> list[str]:
+    """Return asset class values present in the securities table, prefixed with 'All'."""
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        classes = session.scalars(
+            select(Security.asset_class).distinct().order_by(Security.asset_class)
+        ).all()
+    return ["All"] + [ac.value for ac in classes]
+
+
+def list_security_tickers_by_asset_class(asset_class: str | None) -> list[str]:
+    """Return tickers filtered by asset_class. 'All' or None returns every ticker."""
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        stmt = select(Security.ticker).order_by(Security.ticker)
+        if asset_class and asset_class != "All":
+            try:
+                stmt = stmt.where(Security.asset_class == AssetClass(asset_class))
+            except ValueError:
+                pass
+        tickers = session.scalars(stmt).all()
+    return list(tickers)
+
+
+def get_ticker_price_and_trend(ticker: str) -> tuple[str, str]:
+    """Return (formatted_price, trend) for the most recent price of a ticker.
+
+    trend is one of: 'up', 'down', 'flat', 'none'.
+    """
+    clean_ticker = (ticker or "").strip().upper()
+    if not clean_ticker:
+        return "", "none"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        security = session.scalar(select(Security).where(Security.ticker == clean_ticker))
+        if security is None:
+            return "", "none"
+        prices = session.scalars(
+            select(PriceHistory)
+            .where(PriceHistory.security_id == security.id)
+            .order_by(PriceHistory.date.desc())
+            .limit(5)
+        ).all()
+
+    if not prices:
+        return "", "none"
+
+    latest: Decimal = prices[0].close
+    price_str = f"{latest:,.4f}"
+
+    if len(prices) < 2:
+        return price_str, "flat"
+
+    prev: Decimal = prices[1].close
+    if latest > prev:
+        return price_str, "up"
+    if latest < prev:
+        return price_str, "down"
+    return price_str, "flat"
 
 
 def security_form_values(
