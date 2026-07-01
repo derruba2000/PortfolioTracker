@@ -1,44 +1,48 @@
 from __future__ import annotations
 
 from datetime import date as date_type
-from decimal import Decimal, InvalidOperation
+from datetime import timedelta
 from typing import Any
 
 import gradio as gr
 import pandas as pd
 
-from portfolio_management.db.models import TransactionType
+from portfolio_management.db.models import AssetClass, TransactionType
 from portfolio_management.services.accounts import account_choices, portfolio_choices_for_account
-from portfolio_management.services.analysis_filters import account_mode_to_table_filter
+from portfolio_management.services.analysis_filters import ALL_PORTFOLIOS, account_mode_to_table_filter
 from portfolio_management.services.analytics import LIVE_MODE
-from portfolio_management.services.transactions import (
-    add_manual_transaction,
-    import_transactions_from_csv,
-    list_transactions,
-    transfer_cash,
-)
-from portfolio_management.services.reference_data import list_currency_codes
+from portfolio_management.services.transactions import list_transactions
 from portfolio_management.services.securities import (
-    get_security_defaults,
     get_ticker_price_and_trend,
-    list_asset_class_filter_choices,
-    list_security_tickers,
-    list_security_tickers_by_asset_class,
 )
 from portfolio_management.tabs._shared import (
     as_date_table,
-    format_decimal_input,
     format_decimal_with_commas,
     format_integer_with_commas,
-    format_quantity_input,
     portfolio_link,
     ticker_link,
 )
-
-
-def transactions_table(account_mode: str = LIVE_MODE) -> object:
+def transactions_table(
+    account_mode: str = LIVE_MODE,
+    portfolio_filter: str | int | None = None,
+    start_date: str | date_type | None = None,
+    end_date: str | date_type | None = None,
+    asset_class_filter: str = "All",
+    transaction_type_filter: str = "All",
+) -> object:
     transactions_filter = account_mode_to_table_filter(account_mode)
-    txns = as_date_table(list_transactions(transactions_filter), ["Date"])
+    selected_portfolio = None if portfolio_filter in (None, "", ALL_PORTFOLIOS) else portfolio_filter
+    txns = as_date_table(
+        list_transactions(
+            account_filter=transactions_filter,
+            portfolio_filter=selected_portfolio,
+            start_date=start_date,
+            end_date=end_date,
+            asset_class_filter=asset_class_filter,
+            transaction_type_filter=transaction_type_filter,
+        ),
+        ["Date"],
+    )
     if isinstance(txns, pd.DataFrame):
         if "Portfolio" in txns.columns and "Portfolio URL" in txns.columns:
             txns["Portfolio"] = txns.apply(
@@ -48,32 +52,15 @@ def transactions_table(account_mode: str = LIVE_MODE) -> object:
             txns = txns.drop(columns=["Portfolio URL"])
         if "Ticker" in txns.columns:
             txns["Ticker"] = txns["Ticker"].map(ticker_link)
+            txns["Price Trend"] = txns["Ticker"].map(_ticker_trend_for_ledger)
         if "Quantity" in txns.columns:
             txns["Quantity"] = txns["Quantity"].map(format_integer_with_commas)
         for column in ["Price", "Fees", "Total Value", "FX Rate"]:
             if column in txns.columns:
                 txns[column] = txns[column].map(format_decimal_with_commas)
+        if "Price Trend" not in txns.columns:
+            txns["Price Trend"] = ""
     return txns
-
-
-def _auto_total_value(quantity: str, price: str, current_total: str) -> str:
-    _ = current_total
-    try:
-        q = Decimal(str(quantity or "0").replace(",", "") or "0")
-        p = Decimal(str(price or "0").replace(",", "") or "0")
-        if q <= 0 or p <= 0:
-            return ""
-        return f"{q * p:,.2f}"
-    except (InvalidOperation, ValueError):
-        return ""
-
-
-def _security_currencies() -> list[str]:
-    return list_currency_codes()
-
-
-def _ticker_choices() -> list[str]:
-    return list_security_tickers()
 
 
 _PRICE_TREND_CSS = """
@@ -107,43 +94,27 @@ def _build_price_trend_html(trend: str, price_str: str) -> str:
     return f'{_PRICE_TREND_CSS}<span style="{style}">{arrow} {price_str}</span>'
 
 
-def _asset_class_changed(asset_class: str) -> object:
-    tickers = list_security_tickers_by_asset_class(asset_class)
-    return gr.update(choices=tickers, value=None)
-
-
-def _build_ticker_link_html(ticker: str) -> str:
-    clean_ticker = (ticker or "").strip().upper()
-    if not clean_ticker:
+def _ticker_trend_for_ledger(ticker_cell: object) -> str:
+    raw_ticker = str(ticker_cell or "").strip()
+    if not raw_ticker:
         return ""
-    link = ticker_link(clean_ticker)
-    return (
-        f'<div style="margin-top:4px;font-size:0.85em;">'
-        f"📊 {link}"
-        f"</div>"
-    )
-
-
-def _ticker_changed(
-    ticker: str,
-    current_quantity: str,
-) -> tuple:
-    description, _asset_class, currency = get_security_defaults(
-        ticker=ticker,
-        current_description="",
-        current_asset_class="EQUITY",
-        current_currency="",
-    )
-    currency_update = gr.update(value=currency) if currency else gr.update()
-    price_str, trend = get_ticker_price_and_trend(ticker)
-    price_html = _build_price_trend_html(trend, price_str)
-    total = _auto_total_value(current_quantity, price_str, "")
-    ticker_html = _build_ticker_link_html(ticker)
-    return description, currency_update, price_str, price_html, total, ticker_html
+    # ticker_cell may already contain anchor markup.
+    if ">" in raw_ticker and "<" in raw_ticker:
+        raw_ticker = raw_ticker.split(">")[-2].split("<")[0]
+    price_str, trend = get_ticker_price_and_trend(raw_ticker)
+    return _build_price_trend_html(trend, price_str)
 
 
 def _account_choices_for_mode(account_mode: str) -> list[str]:
     return account_choices(include_simulated=True, account_mode=account_mode)
+
+
+def _asset_class_filter_choices() -> list[str]:
+    return ["All", *[asset.value for asset in AssetClass]]
+
+
+def _transaction_type_filter_choices() -> list[str]:
+    return ["All", *[transaction_type.value for transaction_type in TransactionType]]
 
 
 def _selected_or_first(current_value: str | None, choices: list[str]) -> str | None:
@@ -153,10 +124,10 @@ def _selected_or_first(current_value: str | None, choices: list[str]) -> str | N
 def _filter_changed(account_mode: str) -> tuple[Any, ...]:
     accounts = _account_choices_for_mode(account_mode)
     selected_account = _selected_or_first(None, accounts)
-    portfolios = portfolio_choices_for_account(selected_account)
-    selected_portfolio = _selected_or_first(None, portfolios)
+    portfolios = _portfolio_choices_for_account_filter(selected_account)
+    selected_portfolio = _selected_or_first(ALL_PORTFOLIOS, portfolios)
     return (
-        transactions_table(account_mode),
+        transactions_table(account_mode, portfolio_filter=selected_portfolio),
         gr.update(choices=accounts, value=selected_account),
         gr.update(choices=portfolios, value=selected_portfolio),
         gr.update(choices=accounts, value=selected_account),
@@ -168,86 +139,53 @@ data_entry_mode_changed = _filter_changed
 
 
 def _update_portfolios(account_choice: str) -> object:
-    portfolios = portfolio_choices_for_account(account_choice)
-    selected_portfolio = portfolios[0] if portfolios else None
+    portfolios = _portfolio_choices_for_account_filter(account_choice)
+    selected_portfolio = ALL_PORTFOLIOS if portfolios else None
     return gr.update(choices=portfolios, value=selected_portfolio)
 
 
-def _add_manual_transaction(
-    portfolio_choice: str,
-    date: str,
-    transaction_type: str,
-    description: str,
-    ticker: str,
-    security_name: str,
-    security_currency_code: str,
-    quantity: str,
-    price: str,
-    fees: str,
-    total_value: str,
-    currency_exchange_rate: str,
-    account_mode: str = LIVE_MODE,
-) -> tuple[Any, ...]:
-    if not portfolio_choice:
-        return (
-            "Choose a portfolio before adding a transaction.",
-            transactions_table(account_mode),
-        )
-    try:
-        status = add_manual_transaction(
-            portfolio_id=portfolio_choice,
-            date=date,
-            transaction_type=transaction_type,
-            description=description,
-            ticker=ticker,
-            security_name=security_name,
-            asset_class="EQUITY",
-            security_currency_code=security_currency_code,
-            quantity=quantity,
-            price=price,
-            fees=fees,
-            total_value=total_value,
-            currency_exchange_rate=currency_exchange_rate,
-        )
-        return status, transactions_table(account_mode)
-    except Exception as exc:
-        return f"Could not add transaction: {exc}", transactions_table(account_mode)
+def _portfolio_choices_for_account_filter(account_choice: str | None) -> list[str]:
+    return [ALL_PORTFOLIOS, *portfolio_choices_for_account(account_choice)]
 
 
-def _transfer_cash_between_accounts(
-    source_account_choice: str,
-    target_account_choice: str,
-    amount: str,
-    transfer_date: str,
-    transfer_description: str,
-    account_mode: str = LIVE_MODE,
-) -> tuple[Any, ...]:
-    try:
-        status = transfer_cash(
-            source_account_choice=source_account_choice,
-            target_account_choice=target_account_choice,
-            amount=amount,
-            transfer_date=transfer_date,
-            description=transfer_description,
-        )
-        return status, transactions_table(account_mode)
-    except Exception as exc:
-        return f"Could not transfer cash: {exc}", transactions_table(account_mode)
+def _ledger_filtered_table(
+    account_mode: str,
+    portfolio_filter: str,
+    start_date: str,
+    end_date: str,
+    asset_class_filter: str,
+    transaction_type_filter: str,
+) -> object:
+    return transactions_table(
+        account_mode=account_mode,
+        portfolio_filter=portfolio_filter,
+        start_date=start_date,
+        end_date=end_date,
+        asset_class_filter=asset_class_filter,
+        transaction_type_filter=transaction_type_filter,
+    )
 
 
-def _import_csv_to_portfolio(
-    file: object,
-    portfolio_choice: str,
-    account_mode: str = LIVE_MODE,
-) -> tuple[Any, ...]:
-    if file is None:
-        return "Choose a CSV file to import.", transactions_table(account_mode)
-    try:
-        file_path = getattr(file, "name", file)
-        status = import_transactions_from_csv(file_path, portfolio_id=portfolio_choice)
-        return status, transactions_table(account_mode)
-    except Exception as exc:
-        return f"Could not import CSV: {exc}", transactions_table(account_mode)
+def _account_changed(
+    account_choice: str,
+    account_mode: str,
+    start_date: str,
+    end_date: str,
+    asset_class_filter: str,
+    transaction_type_filter: str,
+) -> tuple[object, object]:
+    portfolio_update = _update_portfolios(account_choice)
+    return (
+        portfolio_update,
+        _ledger_filtered_table(
+            account_mode=account_mode,
+            portfolio_filter=portfolio_update.get("value", ALL_PORTFOLIOS),
+            start_date=start_date,
+            end_date=end_date,
+            asset_class_filter=asset_class_filter,
+            transaction_type_filter=transaction_type_filter,
+        ),
+    )
 
 
 def build_data_entry_tab(
@@ -257,161 +195,199 @@ def build_data_entry_tab(
 ) -> dict[str, Any]:
     initial_accounts = _account_choices_for_mode(LIVE_MODE)
     selected_account = _selected_or_first(selected_account, initial_accounts)
-    initial_portfolios = portfolio_choices_for_account(selected_account)
-    selected_portfolio = _selected_or_first(selected_portfolio, initial_portfolios)
+    initial_portfolios = _portfolio_choices_for_account_filter(selected_account)
+    selected_portfolio = _selected_or_first(selected_portfolio, initial_portfolios) or ALL_PORTFOLIOS
+    default_end_date = date_type.today()
+    default_start_date = default_end_date - timedelta(days=29)
 
-    with gr.Tab("Transactions Entry"):
-        status = gr.Textbox(label="Status", interactive=False)
-        with gr.Tabs():
-            with gr.Tab("Transactions"):
-                with gr.Row():
-                    account_choice = gr.Dropdown(
-                        label="Account",
-                        choices=initial_accounts,
-                        value=selected_account,
-                    )
-                    portfolio_choice = gr.Dropdown(
-                        label="Portfolio",
-                        choices=initial_portfolios,
-                        value=selected_portfolio,
-                    )
+    with gr.Tab("Transactions"):
+        status = gr.Textbox(
+            label="Status",
+            value="Read-only ledger mode: add/edit/delete actions are disabled.",
+            interactive=False,
+        )
 
-                with gr.Row():
-                    date = gr.DateTime(
-                        label="Date",
-                        include_time=False,
-                        type="string",
-                        value=lambda: date_type.today().isoformat(),
-                    )
-                    transaction_type = gr.Dropdown(
-                        label="Type",
-                        choices=[tt.value for tt in TransactionType],
-                        value=TransactionType.BUY.value,
-                    )
-                    asset_class_filter = gr.Dropdown(
-                        label="Asset Class",
-                        choices=list_asset_class_filter_choices(),
-                        value="All",
-                        allow_custom_value=False,
-                    )
-                    ticker = gr.Dropdown(
-                        label="Ticker",
-                        choices=_ticker_choices(),
-                        allow_custom_value=True,
-                        value=None,
-                    )
-                ticker_link_html = gr.HTML(value="")
-                transaction_description = gr.Textbox(label="Description", lines=2)
+        with gr.Row():
+            account_choice = gr.Dropdown(
+                label="Account",
+                choices=initial_accounts,
+                value=selected_account,
+            )
+            portfolio_choice = gr.Dropdown(
+                label="Portfolio",
+                choices=initial_portfolios,
+                value=selected_portfolio,
+            )
 
-                with gr.Row():
-                    security_name = gr.Textbox(label="Security Name")
-                    security_currency_code = gr.Dropdown(
-                        label="Security Currency",
-                        choices=_security_currencies(),
-                        value="GBP",
-                        allow_custom_value=True,
-                    )
+        with gr.Row():
+            start_date_filter = gr.DateTime(
+                label="Start Date",
+                include_time=False,
+                type="string",
+                value=default_start_date.isoformat(),
+            )
+            end_date_filter = gr.DateTime(
+                label="End Date",
+                include_time=False,
+                type="string",
+                value=default_end_date.isoformat(),
+            )
+            asset_class_filter = gr.Dropdown(
+                label="Asset Class",
+                choices=_asset_class_filter_choices(),
+                value="All",
+            )
+            transaction_type_filter = gr.Dropdown(
+                label="Transaction Type",
+                choices=_transaction_type_filter_choices(),
+                value="All",
+            )
 
-                with gr.Row():
-                    quantity = gr.Textbox(label="Quantity", value="0")
-                    price = gr.Textbox(label="Price", value="0")
-                    fees = gr.Textbox(label="Fees", value="0")
-                price_trend_html = gr.HTML(value="")
-                quantity.input(fn=format_quantity_input, inputs=[quantity], outputs=[quantity])
-                price.input(fn=format_decimal_input, inputs=[price], outputs=[price])
-                fees.input(fn=format_decimal_input, inputs=[fees], outputs=[fees])
+        txns_table = gr.Dataframe(
+            value=lambda: transactions_table(
+                LIVE_MODE,
+                portfolio_filter=selected_portfolio,
+                start_date=default_start_date.isoformat(),
+                end_date=default_end_date.isoformat(),
+                asset_class_filter="All",
+                transaction_type_filter="All",
+            ),
+            headers=[
+                "ID",
+                "Order ID",
+                "Date",
+                "Broker",
+                "Account",
+                "Portfolio",
+                "Ticker",
+                "Price Trend",
+                "Type",
+                "Description",
+                "Quantity",
+                "Price",
+                "Fees",
+                "Total Value",
+                "FX Rate",
+            ],
+            datatype=[
+                "number",
+                "str",
+                "date",
+                "str",
+                "str",
+                "markdown",
+                "markdown",
+                "markdown",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+                "str",
+            ],
+            label="Transactions Ledger",
+            interactive=False,
+            show_fullscreen_button=True,
+        )
+        refresh_transactions_button = gr.Button("Refresh Ledger")
 
-                with gr.Row():
-                    total_value = gr.Textbox(label="Total Value")
-                    currency_exchange_rate = gr.Textbox(label="FX Rate", value="1")
-
-                quantity.input(fn=_auto_total_value, inputs=[quantity, price, total_value], outputs=[total_value])
-                price.input(fn=_auto_total_value, inputs=[quantity, price, total_value], outputs=[total_value])
-
-                add_button = gr.Button("Add Transaction", variant="primary")
-
-                csv_file = gr.File(label="CSV Import", file_types=[".csv"])
-                import_button = gr.Button("Import CSV")
-
-                asset_class_filter.change(
-                    fn=_asset_class_changed,
-                    inputs=[asset_class_filter],
-                    outputs=[ticker],
-                )
-                ticker.change(
-                    fn=_ticker_changed,
-                    inputs=[ticker, quantity],
-                    outputs=[security_name, security_currency_code, price, price_trend_html, total_value, ticker_link_html],
-                )
-
-                txns_table = gr.Dataframe(
-                    value=lambda: transactions_table(LIVE_MODE),
-                    headers=[
-                        "ID", "Date", "Broker", "Account", "Portfolio", "Ticker",
-                        "Type", "Description", "Quantity", "Price", "Fees", "Total Value", "FX Rate",
-                    ],
-                    datatype=[
-                        "number", "date", "str", "str", "markdown", "markdown",
-                        "str", "str", "str", "str", "str", "str",
-                    ],
-                    label="Transactions",
-                    interactive=False,
-                    show_fullscreen_button=True,
-                )
-                refresh_transactions_button = gr.Button("Refresh Transactions")
-
-            with gr.Tab("Cash Transfer"):
-                with gr.Row():
-                    transfer_source_account = gr.Dropdown(
-                        label="Transfer Source Account",
-                        choices=initial_accounts,
-                        value=selected_account,
-                    )
-                    transfer_target_account = gr.Dropdown(
-                        label="Transfer Target Account",
-                        choices=initial_accounts,
-                        value=selected_account,
-                    )
-
-                with gr.Row():
-                    transfer_amount = gr.Textbox(label="Transfer Amount")
-                    transfer_description = gr.Textbox(label="Transfer Description")
-
-                transfer_cash_button = gr.Button("Transfer Cash")
+        transfer_source_account = gr.Dropdown(
+            label="Transfer Source Account",
+            choices=initial_accounts,
+            value=selected_account,
+            visible=False,
+        )
+        transfer_target_account = gr.Dropdown(
+            label="Transfer Target Account",
+            choices=initial_accounts,
+            value=selected_account,
+            visible=False,
+        )
 
         refresh_transactions_button.click(
-            fn=transactions_table,
-            inputs=[mode_toggle],
+            fn=_ledger_filtered_table,
+            inputs=[
+                mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
+            ],
             outputs=[txns_table],
         )
         account_choice.change(
-            fn=_update_portfolios,
-            inputs=[account_choice],
-            outputs=[portfolio_choice],
-        )
-        add_button.click(
-            fn=_add_manual_transaction,
+            fn=_account_changed,
             inputs=[
-                portfolio_choice, date, transaction_type, transaction_description,
-                ticker, security_name, security_currency_code,
-                quantity, price, fees, total_value, currency_exchange_rate,
+                account_choice,
                 mode_toggle,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
             ],
-            outputs=[status, txns_table],
+            outputs=[portfolio_choice, txns_table],
         )
-        transfer_cash_button.click(
-            fn=_transfer_cash_between_accounts,
+        portfolio_choice.change(
+            fn=_ledger_filtered_table,
             inputs=[
-                transfer_source_account, transfer_target_account,
-                transfer_amount, date, transfer_description,
                 mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
             ],
-            outputs=[status, txns_table],
+            outputs=[txns_table],
         )
-        import_button.click(
-            fn=_import_csv_to_portfolio,
-            inputs=[csv_file, portfolio_choice, mode_toggle],
-            outputs=[status, txns_table],
+        start_date_filter.change(
+            fn=_ledger_filtered_table,
+            inputs=[
+                mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
+            ],
+            outputs=[txns_table],
+        )
+        end_date_filter.change(
+            fn=_ledger_filtered_table,
+            inputs=[
+                mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
+            ],
+            outputs=[txns_table],
+        )
+        asset_class_filter.change(
+            fn=_ledger_filtered_table,
+            inputs=[
+                mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
+            ],
+            outputs=[txns_table],
+        )
+        transaction_type_filter.change(
+            fn=_ledger_filtered_table,
+            inputs=[
+                mode_toggle,
+                portfolio_choice,
+                start_date_filter,
+                end_date_filter,
+                asset_class_filter,
+                transaction_type_filter,
+            ],
+            outputs=[txns_table],
         )
 
     return {

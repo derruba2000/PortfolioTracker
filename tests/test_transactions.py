@@ -23,6 +23,7 @@ from portfolio_management.services.transactions import (
     TransactionInput,
     create_transaction,
     import_transactions_from_dataframe,
+    list_transactions,
     transfer_cash,
     transaction_input_from_mapping,
 )
@@ -43,6 +44,18 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     portfolio = Portfolio(account=account, name="Core")
     session.add(portfolio)
     session.flush()
+
+    create_transaction(
+        session,
+        TransactionInput(
+            portfolio_id=portfolio.id,
+            date=datetime(2026, 6, 20),
+            transaction_type=TransactionType.DEPOSIT,
+            ticker=None,
+            quantity=1,
+            price=Decimal("500"),
+        ),
+    )
 
     transaction = create_transaction(
         session,
@@ -75,6 +88,108 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     assert security.asset_class == AssetClass.EQUITY
     assert transaction.total_value == Decimal("202")
 
+    settlements = session.scalars(
+        select(Transaction)
+        .where(
+            Transaction.portfolio_id == portfolio.id,
+            Transaction.security_id.is_(None),
+            Transaction.type == TransactionType.WITHDRAWAL,
+            Transaction.description.contains("Auto cash settlement for trade #"),
+        )
+    ).all()
+    assert len(settlements) == 1
+    assert "cash withdrawn from portfolio to settle BUY" in (settlements[0].description or "")
+
+
+def test_buy_transaction_is_blocked_when_cash_is_insufficient(session: Session) -> None:
+    broker = Broker(name="Interactive Brokers")
+    account = Account(broker=broker, name="ISA", currency_code="GBP")
+    portfolio = Portfolio(account=account, name="Core")
+    session.add(portfolio)
+    session.flush()
+
+    with pytest.raises(ValueError, match="Not enough cash in portfolio"):
+        create_transaction(
+            session,
+            TransactionInput(
+                portfolio_id=portfolio.id,
+                date=datetime(2026, 6, 21),
+                transaction_type=TransactionType.BUY,
+                ticker="VWCE",
+                security_name="Vanguard FTSE All-World UCITS ETF",
+                asset_class=AssetClass.EQUITY,
+                security_currency_code="GBP",
+                quantity=2,
+                price=Decimal("100"),
+                fees=Decimal("1"),
+            ),
+        )
+
+
+def test_sell_transaction_creates_cash_deposit_settlement(session: Session) -> None:
+    broker = Broker(name="Interactive Brokers")
+    account = Account(broker=broker, name="ISA", currency_code="GBP")
+    portfolio = Portfolio(account=account, name="Core")
+    session.add(portfolio)
+    session.flush()
+
+    create_transaction(
+        session,
+        TransactionInput(
+            portfolio_id=portfolio.id,
+            date=datetime(2026, 6, 20),
+            transaction_type=TransactionType.DEPOSIT,
+            ticker=None,
+            quantity=1,
+            price=Decimal("1000"),
+        ),
+    )
+    create_transaction(
+        session,
+        TransactionInput(
+            portfolio_id=portfolio.id,
+            date=datetime(2026, 6, 21),
+            transaction_type=TransactionType.BUY,
+            ticker="VWCE",
+            security_name="Vanguard FTSE All-World UCITS ETF",
+            asset_class=AssetClass.EQUITY,
+            security_currency_code="GBP",
+            quantity=2,
+            price=Decimal("100"),
+            fees=Decimal("2"),
+        ),
+    )
+
+    sell = create_transaction(
+        session,
+        TransactionInput(
+            portfolio_id=portfolio.id,
+            date=datetime(2026, 6, 22),
+            transaction_type=TransactionType.SELL,
+            ticker="VWCE",
+            security_name="Vanguard FTSE All-World UCITS ETF",
+            asset_class=AssetClass.EQUITY,
+            security_currency_code="GBP",
+            quantity=1,
+            price=Decimal("110"),
+            fees=Decimal("1"),
+        ),
+    )
+    session.commit()
+
+    settlements = session.scalars(
+        select(Transaction)
+        .where(
+            Transaction.portfolio_id == portfolio.id,
+            Transaction.security_id.is_(None),
+            Transaction.type == TransactionType.DEPOSIT,
+            Transaction.description.contains(f"Auto cash settlement for trade #{sell.id}"),
+        )
+    ).all()
+    assert len(settlements) == 1
+    assert settlements[0].total_value == Decimal("109")
+    assert "cash deposited into portfolio from SELL proceeds" in (settlements[0].description or "")
+
 
 def test_import_transactions_from_dataframe(session: Session) -> None:
     broker = Broker(name="Broker")
@@ -85,6 +200,13 @@ def test_import_transactions_from_dataframe(session: Session) -> None:
 
     dataframe = pd.DataFrame(
         [
+            {
+                "Date": "2026-06-19",
+                "Type": "DEPOSIT",
+                "Quantity": "1",
+                "Price": "1000",
+                "Fees": "0",
+            },
             {
                 "Date": "2026-06-20",
                 "Type": "BUY",
@@ -115,12 +237,12 @@ def test_import_transactions_from_dataframe(session: Session) -> None:
     session.commit()
 
     transactions = session.scalars(select(Transaction).order_by(Transaction.id)).all()
-    assert imported_count == 2
-    assert len(transactions) == 2
+    assert imported_count == 3
+    assert len(transactions) == 5
     assert {transaction.portfolio_id for transaction in transactions} == {portfolio.id}
-    assert transactions[0].total_value == Decimal("601")
-    assert transactions[0].description == "Core position"
-    assert transactions[1].total_value == Decimal("209")
+    assert transactions[1].total_value == Decimal("601")
+    assert transactions[1].description == "Core position"
+    assert transactions[3].total_value == Decimal("209")
 
 
 def test_dividend_requires_positive_total_value(session: Session) -> None:
@@ -181,17 +303,18 @@ def test_transaction_input_from_mapping_normalizes_aliases() -> None:
     assert transaction_input.asset_class == AssetClass.BOND
 
 
-def test_transaction_input_rejects_fractional_quantity() -> None:
-    with pytest.raises(ValueError, match="Quantity must be an integer value"):
-        transaction_input_from_mapping(
-            {
-                "Date": "2026-06-21",
-                "Type": "BUY",
-                "Ticker": "SPY",
-                "Quantity": "1.25",
-                "Price": "500.00",
-            }
-        )
+def test_transaction_input_accepts_fractional_quantity() -> None:
+    transaction_input = transaction_input_from_mapping(
+        {
+            "Date": "2026-06-21",
+            "Type": "BUY",
+            "Ticker": "SPY",
+            "Quantity": "1.25",
+            "Price": "500.00",
+        }
+    )
+
+    assert transaction_input.quantity == Decimal("1.25")
 
 
 def test_simulated_account_is_excluded_by_firewall_filter(session: Session) -> None:
@@ -280,3 +403,91 @@ def test_transfer_cash_requires_matching_currency(monkeypatch) -> None:
             amount="10",
             transfer_date="2026-06-22",
         )
+
+
+def test_list_transactions_supports_advanced_ledger_filters(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.transactions.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Live", currency_code="USD", is_simulated=False)
+        portfolio_core = Portfolio(account=account, name="Core")
+        portfolio_income = Portfolio(account=account, name="Income")
+        equity_security = Security(
+            ticker="AAPL",
+            name="Apple",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all([broker, account, portfolio_core, portfolio_income, equity_security])
+        session.flush()
+
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio_core,
+                    security=equity_security,
+                    date=datetime(2026, 7, 1, 10, 0, 0),
+                    type=TransactionType.BUY,
+                    description="Core buy",
+                    quantity=Decimal("1"),
+                    price=Decimal("100"),
+                    fees=Decimal("1"),
+                    total_value=Decimal("101"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio_core,
+                    security=None,
+                    date=datetime(2026, 7, 2, 10, 0, 0),
+                    type=TransactionType.DEPOSIT,
+                    description="Core cash deposit",
+                    quantity=Decimal("1"),
+                    price=Decimal("500"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("500"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio_income,
+                    security=None,
+                    date=datetime(2026, 6, 20, 10, 0, 0),
+                    type=TransactionType.WITHDRAWAL,
+                    description="Income withdrawal",
+                    quantity=Decimal("1"),
+                    price=Decimal("50"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("-50"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+            ]
+        )
+        session.commit()
+        core_choice = f"{portfolio_core.id} | {portfolio_core.name}"
+
+    core_only = list_transactions(account_filter="Real", portfolio_filter=core_choice)
+    assert set(core_only["Portfolio"]) == {"Core"}
+
+    july_window = list_transactions(
+        account_filter="Real",
+        start_date="2026-07-01",
+        end_date="2026-07-01",
+    )
+    assert set(july_window["Date"]) == {"2026-07-01"}
+
+    equity_only = list_transactions(account_filter="Real", asset_class_filter="EQUITY")
+    assert len(equity_only.index) == 1
+    assert set(equity_only["Ticker"]) == {"AAPL"}
+
+    cash_only = list_transactions(account_filter="Real", asset_class_filter="CASH")
+    assert set(cash_only["Ticker"]) == {""}
+
+    deposits_only = list_transactions(account_filter="Real", transaction_type_filter="DEPOSIT")
+    assert len(deposits_only.index) == 1
+    assert set(deposits_only["Type"]) == {"DEPOSIT"}

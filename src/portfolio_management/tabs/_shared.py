@@ -42,7 +42,10 @@ def format_two_decimals(value: object) -> str:
 
 def format_integer_with_commas(value: object) -> str:
     try:
-        return f"{int(Decimal(str(value))):,}"
+        quantity = Decimal(str(value))
+        if quantity == quantity.to_integral_value():
+            return f"{int(quantity):,}"
+        return f"{quantity:,.8f}".rstrip("0").rstrip(".")
     except (InvalidOperation, ValueError, TypeError):
         return str(value)
 
@@ -58,10 +61,28 @@ def format_quantity_input(value: str) -> str:
     raw = (value or "").strip().replace(",", "")
     if not raw:
         return ""
-    digits = "".join(char for char in raw if char.isdigit())
-    if not digits:
+    if raw == ".":
+        return "0."
+
+    sign = ""
+    if raw.startswith("-"):
+        sign = "-"
+        raw = raw[1:]
+
+    sanitized = "".join(char for char in raw if char.isdigit() or char == ".")
+    if not sanitized:
         return ""
-    return f"{int(digits):,}"
+
+    if sanitized.count(".") > 1:
+        parts = sanitized.split(".")
+        sanitized = f"{parts[0]}.{''.join(parts[1:])}"
+
+    if "." in sanitized:
+        whole, fractional = sanitized.split(".", 1)
+        whole_display = f"{int(whole):,}" if whole else "0"
+        return f"{sign}{whole_display}.{fractional}"
+
+    return f"{sign}{int(sanitized):,}"
 
 
 def format_decimal_input(value: str) -> str:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,6 +30,7 @@ from portfolio_management.services.accounts import (
 DEFAULT_BROKER_NAME = "Default Broker"
 DEFAULT_ACCOUNT_NAME = "Default Account"
 DEFAULT_CURRENCY_CODE = "USD"
+AUTO_SETTLEMENT_PREFIX = "Auto cash settlement for trade #"
 
 
 CSV_COLUMN_ALIASES = {
@@ -78,7 +81,7 @@ class TransactionInput:
     date: datetime
     transaction_type: TransactionType
     ticker: str | None
-    quantity: int
+    quantity: Decimal
     price: Decimal
     fees: Decimal = Decimal("0")
     total_value: Decimal | None = None
@@ -94,6 +97,7 @@ class TransactionInput:
     security_name: str | None = None
     asset_class: AssetClass = AssetClass.EQUITY
     security_currency_code: str = DEFAULT_CURRENCY_CODE
+    order_id: int | None = None
 
 
 def create_transaction(session: Session, transaction_input: TransactionInput) -> Transaction:
@@ -103,7 +107,18 @@ def create_transaction(session: Session, transaction_input: TransactionInput) ->
     security = _get_or_create_security(session, transaction_input)
     total_value = _calculate_total_value(transaction_input)
 
+    if security is not None and transaction_input.transaction_type == TransactionType.BUY:
+        _ensure_sufficient_cash_for_buy(
+            session=session,
+            portfolio=portfolio,
+            security=security,
+            total_value=total_value,
+            currency_exchange_rate=transaction_input.currency_exchange_rate,
+            as_of=transaction_input.date,
+        )
+
     transaction = Transaction(
+        order_id=transaction_input.order_id,
         portfolio=portfolio,
         security=security,
         date=transaction_input.date,
@@ -117,6 +132,19 @@ def create_transaction(session: Session, transaction_input: TransactionInput) ->
     )
     session.add(transaction)
     session.flush()
+
+    if security is not None and transaction_input.transaction_type in {
+        TransactionType.BUY,
+        TransactionType.SELL,
+    }:
+        _create_cash_settlement_transaction(
+            session=session,
+            trade=transaction,
+            portfolio=portfolio,
+            security=security,
+            order_id=transaction_input.order_id,
+        )
+
     return transaction
 
 
@@ -251,8 +279,20 @@ def import_transactions_from_csv(file_path: str | Path, portfolio_id: int | str 
     return f"Imported {imported_count} transaction(s)."
 
 
-def list_transactions(account_filter: str = "All") -> pd.DataFrame:
+def list_transactions(
+    account_filter: str = "All",
+    portfolio_filter: str | int | None = None,
+    start_date: str | date | None = None,
+    end_date: str | date | None = None,
+    asset_class_filter: str = "All",
+    transaction_type_filter: str = "All",
+) -> pd.DataFrame:
     session_factory = get_session_factory()
+    portfolio_id = parse_choice_id(portfolio_filter)
+    parsed_start_date = _parse_filter_date(start_date)
+    parsed_end_date = _parse_filter_date(end_date)
+    parsed_asset_class = _parse_asset_class_filter(asset_class_filter)
+    parsed_transaction_type = _parse_transaction_type_filter(transaction_type_filter)
 
     with session_factory() as session:
         stmt = (
@@ -270,12 +310,28 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
             stmt = stmt.where(Account.is_simulated.is_(False))
         elif account_filter == "Test":
             stmt = stmt.where(Account.is_simulated.is_(True))
+        if portfolio_id is not None:
+            stmt = stmt.where(Transaction.portfolio_id == portfolio_id)
+        if parsed_start_date is not None:
+            stmt = stmt.where(func.date(Transaction.date) >= parsed_start_date.isoformat())
+        if parsed_end_date is not None:
+            stmt = stmt.where(func.date(Transaction.date) <= parsed_end_date.isoformat())
+        if parsed_transaction_type is not None:
+            stmt = stmt.where(Transaction.type == parsed_transaction_type)
+        if parsed_asset_class == AssetClass.CASH:
+            stmt = stmt.where(Transaction.security_id.is_(None))
+        elif parsed_asset_class is not None:
+            stmt = stmt.where(
+                Transaction.security_id.is_not(None),
+                Security.asset_class == parsed_asset_class,
+            )
         rows = session.execute(stmt).all()
 
     return pd.DataFrame(
         [
             {
                 "ID": transaction.id,
+                "Order ID": transaction.order_id or "",
                 "Date": transaction.date.date().isoformat(),
                 "Broker": broker.name,
                 "Account": f"{account.name} [TEST]" if account.is_simulated else account.name,
@@ -294,6 +350,7 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
         ],
         columns=[
             "ID",
+            "Order ID",
             "Date",
             "Broker",
             "Account",
@@ -309,6 +366,41 @@ def list_transactions(account_filter: str = "All") -> pd.DataFrame:
             "FX Rate",
         ],
     )
+
+
+def _parse_filter_date(raw_value: str | date | None) -> date | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, date):
+        return raw_value
+
+    clean = str(raw_value or "").strip()
+    if not clean:
+        return None
+    try:
+        return datetime.fromisoformat(clean).date()
+    except ValueError:
+        return date.fromisoformat(clean)
+
+
+def _parse_asset_class_filter(raw_value: str | None) -> AssetClass | None:
+    clean = (raw_value or "All").strip().upper()
+    if clean in {"", "ALL"}:
+        return None
+    try:
+        return AssetClass(clean)
+    except ValueError as exc:
+        raise ValueError(f"Unsupported asset class filter '{raw_value}'.") from exc
+
+
+def _parse_transaction_type_filter(raw_value: str | None) -> TransactionType | None:
+    clean = (raw_value or "All").strip().upper()
+    if clean in {"", "ALL"}:
+        return None
+    try:
+        return TransactionType(clean)
+    except ValueError as exc:
+        raise ValueError(f"Unsupported transaction type filter '{raw_value}'.") from exc
 
 
 def transaction_input_from_mapping(raw_values: dict[str, Any]) -> TransactionInput:
@@ -336,7 +428,7 @@ def transaction_input_from_mapping(raw_values: dict[str, Any]) -> TransactionInp
         security_currency_code=(
             _clean_string(values.get("security_currency_code")) or DEFAULT_CURRENCY_CODE
         ).upper(),
-        quantity=_parse_int(values.get("quantity"), default=0),
+        quantity=_parse_decimal(values.get("quantity"), default=Decimal("0")),
         price=_parse_decimal(values.get("price"), default=Decimal("0")),
         fees=_parse_decimal(values.get("fees"), default=Decimal("0")),
         total_value=_parse_optional_decimal(values.get("total_value")),
@@ -424,6 +516,186 @@ def _resolve_portfolio(session: Session, transaction_input: TransactionInput) ->
     raise ValueError(
         "Portfolio is required. Create one from Master Data / Portfolios, then select it before saving transactions."
     )
+
+
+def _ensure_sufficient_cash_for_buy(
+    session: Session,
+    portfolio: Portfolio,
+    security: Security,
+    total_value: Decimal,
+    currency_exchange_rate: Decimal,
+    as_of: datetime,
+) -> None:
+    available_cash = _portfolio_cash_balance_in_account_currency(
+        session=session,
+        portfolio=portfolio,
+        as_of=as_of,
+    )
+    required_cash = _trade_value_in_account_currency(
+        total_value=total_value,
+        currency_exchange_rate=currency_exchange_rate,
+        security_currency=security.currency_code,
+        account_currency=portfolio.account.currency_code,
+    )
+    if available_cash < required_cash:
+        raise ValueError(
+            "Not enough cash in portfolio. "
+            f"Available: {available_cash:.2f} {portfolio.account.currency_code}. "
+            f"Required: {required_cash:.2f} {portfolio.account.currency_code}."
+        )
+
+
+def _create_cash_settlement_transaction(
+    session: Session,
+    trade: Transaction,
+    portfolio: Portfolio,
+    security: Security,
+    order_id: int | None = None,
+) -> None:
+    account_currency = portfolio.account.currency_code
+    settlement_amount = _trade_value_in_account_currency(
+        total_value=trade.total_value,
+        currency_exchange_rate=trade.currency_exchange_rate,
+        security_currency=security.currency_code,
+        account_currency=account_currency,
+    )
+    trade_type = trade.type.value
+    ticker = security.ticker
+    if trade.type == TransactionType.BUY:
+        settlement_type = TransactionType.WITHDRAWAL
+        settlement_total = -abs(settlement_amount)
+        explanation = "cash withdrawn from portfolio to settle BUY"
+    else:
+        settlement_type = TransactionType.DEPOSIT
+        settlement_total = abs(settlement_amount)
+        explanation = "cash deposited into portfolio from SELL proceeds"
+
+    settlement_description = (
+        f"{AUTO_SETTLEMENT_PREFIX}{trade.id} "
+        f"({trade_type} {ticker}): {explanation}."
+    )
+    settlement = Transaction(
+        order_id=order_id,
+        portfolio=portfolio,
+        security=None,
+        date=trade.date,
+        type=settlement_type,
+        description=settlement_description,
+        quantity=Decimal("1"),
+        price=abs(settlement_amount),
+        fees=Decimal("0"),
+        total_value=settlement_total,
+        currency_exchange_rate=Decimal("1"),
+    )
+    session.add(settlement)
+    session.flush()
+
+
+def _portfolio_cash_balance_in_account_currency(
+    session: Session,
+    portfolio: Portfolio,
+    as_of: datetime,
+) -> Decimal:
+    rows = list(
+        session.execute(
+            select(Transaction, Security)
+            .join(Transaction.security, isouter=True)
+            .where(Transaction.portfolio_id == portfolio.id)
+            .where(Transaction.date <= as_of)
+            .order_by(Transaction.date, Transaction.id)
+        ).all()
+    )
+    settlement_ids = _trade_settlement_transaction_ids(rows)
+    balance = Decimal("0")
+
+    for transaction, security in rows:
+        if security is None:
+            if transaction.type == TransactionType.DEPOSIT:
+                balance += transaction.total_value
+            elif transaction.type == TransactionType.WITHDRAWAL:
+                balance -= abs(transaction.total_value)
+            continue
+
+        if transaction.id in settlement_ids:
+            continue
+
+        if transaction.type == TransactionType.BUY:
+            balance -= _trade_value_in_account_currency(
+                total_value=transaction.total_value,
+                currency_exchange_rate=transaction.currency_exchange_rate,
+                security_currency=security.currency_code,
+                account_currency=portfolio.account.currency_code,
+            )
+        elif transaction.type == TransactionType.SELL:
+            balance += _trade_value_in_account_currency(
+                total_value=transaction.total_value,
+                currency_exchange_rate=transaction.currency_exchange_rate,
+                security_currency=security.currency_code,
+                account_currency=portfolio.account.currency_code,
+            )
+
+    return balance
+
+
+def _trade_value_in_account_currency(
+    total_value: Decimal,
+    currency_exchange_rate: Decimal,
+    security_currency: str,
+    account_currency: str,
+) -> Decimal:
+    amount = abs(total_value)
+    if security_currency.upper() == account_currency.upper():
+        return amount
+    return amount * currency_exchange_rate
+
+
+def _trade_settlement_transaction_ids(
+    rows: list[tuple[Transaction, Security | None]],
+) -> set[int]:
+    matched_ids: set[int] = set()
+    settlement_pattern = re.compile(r"auto cash settlement for trade #(\d+)", re.IGNORECASE)
+
+    trades_by_key: dict[tuple[date, str, TransactionType], list[Transaction]] = {}
+    cash_by_key: dict[tuple[date, str, TransactionType], list[Transaction]] = {}
+
+    for transaction, security in rows:
+        description = (transaction.description or "").strip()
+        match = settlement_pattern.search(description)
+        if match and security is None and transaction.type in {
+            TransactionType.DEPOSIT,
+            TransactionType.WITHDRAWAL,
+        }:
+            matched_ids.add(transaction.id)
+            matched_ids.add(int(match.group(1)))
+            continue
+
+        normalized_description = description.casefold()
+        if not normalized_description:
+            continue
+        transaction_date = transaction.date.date()
+        if security is not None and transaction.type in {TransactionType.BUY, TransactionType.SELL}:
+            cash_type = (
+                TransactionType.WITHDRAWAL
+                if transaction.type == TransactionType.BUY
+                else TransactionType.DEPOSIT
+            )
+            trades_by_key.setdefault(
+                (transaction_date, normalized_description, cash_type),
+                [],
+            ).append(transaction)
+        elif security is None and transaction.type in {TransactionType.DEPOSIT, TransactionType.WITHDRAWAL}:
+            cash_by_key.setdefault(
+                (transaction_date, normalized_description, transaction.type),
+                [],
+            ).append(transaction)
+
+    for key, trades in trades_by_key.items():
+        settlements = cash_by_key.get(key, [])
+        for trade, settlement in zip(trades, settlements, strict=False):
+            matched_ids.add(trade.id)
+            matched_ids.add(settlement.id)
+
+    return matched_ids
 
 
 def _select_existing_portfolio_for_account(session: Session, account: Account) -> Portfolio:
@@ -570,24 +842,6 @@ def _parse_optional_decimal(value: Any) -> Decimal | None:
 
 def _parse_optional_int(value: Any) -> int | None:
     return parse_choice_id(_clean_string(value))
-
-
-def _parse_int(value: Any, default: int) -> int:
-    if _is_missing(value):
-        return default
-
-    try:
-        normalized = str(value).strip().replace(",", "")
-        if normalized == "":
-            return default
-        decimal_value = Decimal(normalized)
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"Invalid integer value '{value}'.") from exc
-
-    if decimal_value != decimal_value.to_integral_value():
-        raise ValueError(f"Quantity must be an integer value, got '{value}'.")
-
-    return int(decimal_value)
 
 
 def _parse_bool(value: Any) -> bool:

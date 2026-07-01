@@ -48,6 +48,8 @@ def migrate_sqlite_schema(engine: object) -> None:
     """Apply small SQLite schema upgrades until a migration tool is introduced."""
 
     with engine.begin() as connection:
+        _ensure_orders_table(connection)
+
         broker_columns = {
             row[1]
             for row in connection.execute(text("PRAGMA table_info(brokers)")).fetchall()
@@ -205,6 +207,9 @@ def migrate_sqlite_schema(engine: object) -> None:
         if "portfolio_id" not in transaction_columns:
             connection.execute(text("ALTER TABLE transactions ADD COLUMN portfolio_id INTEGER"))
             transaction_columns.add("portfolio_id")
+        if "order_id" not in transaction_columns:
+            connection.execute(text("ALTER TABLE transactions ADD COLUMN order_id INTEGER"))
+            transaction_columns.add("order_id")
         if "description" not in transaction_columns:
             connection.execute(text("ALTER TABLE transactions ADD COLUMN description VARCHAR(1000)"))
             transaction_columns.add("description")
@@ -258,7 +263,7 @@ def migrate_sqlite_schema(engine: object) -> None:
             "DECIMAL" not in transaction_column_types.get(column, "")
             for column in decimal_columns
         )
-        needs_quantity_type_upgrade = "INT" not in transaction_column_types.get("quantity", "")
+        needs_quantity_type_upgrade = "DECIMAL" not in transaction_column_types.get("quantity", "")
 
         if "account_id" in transaction_columns or needs_decimal_type_upgrade or needs_quantity_type_upgrade:
             raw_rows = connection.execute(
@@ -266,6 +271,7 @@ def migrate_sqlite_schema(engine: object) -> None:
                     """
                     SELECT
                         id,
+                        order_id,
                         portfolio_id,
                         security_id,
                         date,
@@ -283,7 +289,6 @@ def migrate_sqlite_schema(engine: object) -> None:
             ).mappings().all()
 
             converted_rows = []
-            non_integer_quantities: list[tuple[int, str]] = []
 
             for row in raw_rows:
                 try:
@@ -293,34 +298,21 @@ def migrate_sqlite_schema(engine: object) -> None:
                         f"Cannot migrate transactions.quantity for row id {row['id']}: {row['quantity']}"
                     ) from exc
 
-                if quantity_decimal != quantity_decimal.to_integral_value():
-                    non_integer_quantities.append((row["id"], str(row["quantity"])))
-                    continue
-
                 converted_rows.append(
                     {
                         "id": row["id"],
+                        "order_id": row["order_id"],
                         "portfolio_id": row["portfolio_id"],
                         "security_id": row["security_id"],
                         "date": row["date"],
                         "type": row["type"],
                         "description": row["description"],
-                        "quantity": int(quantity_decimal),
+                        "quantity": str(quantity_decimal),
                         "price": str(Decimal(str(row["price"]))),
                         "fees": str(Decimal(str(row["fees"]))),
                         "total_value": str(Decimal(str(row["total_value"]))),
                         "currency_exchange_rate": str(Decimal(str(row["currency_exchange_rate"]))),
                     }
-                )
-
-            if non_integer_quantities:
-                sample = ", ".join(
-                    f"id={row_id} quantity={value}"
-                    for row_id, value in non_integer_quantities[:5]
-                )
-                raise ValueError(
-                    "Cannot migrate quantity to INTEGER without data loss. "
-                    f"Found non-integer quantities: {sample}"
                 )
 
             connection.execute(text("PRAGMA foreign_keys=OFF"))
@@ -329,17 +321,19 @@ def migrate_sqlite_schema(engine: object) -> None:
                     """
                     CREATE TABLE IF NOT EXISTS transactions_new (
                         id INTEGER NOT NULL,
+                        order_id INTEGER,
                         portfolio_id INTEGER NOT NULL,
                         security_id INTEGER,
                         date DATETIME NOT NULL,
                         type VARCHAR(10) NOT NULL,
                         description VARCHAR(1000),
-                        quantity INTEGER NOT NULL,
+                        quantity DECIMAL(32, 10) NOT NULL,
                         price DECIMAL(32, 10) NOT NULL,
                         fees DECIMAL(32, 10) NOT NULL,
                         total_value DECIMAL(32, 10) NOT NULL,
                         currency_exchange_rate DECIMAL(32, 10) NOT NULL,
                         PRIMARY KEY (id),
+                        FOREIGN KEY(order_id) REFERENCES orders (id),
                         FOREIGN KEY(portfolio_id) REFERENCES portfolios (id),
                         FOREIGN KEY(security_id) REFERENCES securities (id)
                     )
@@ -352,6 +346,7 @@ def migrate_sqlite_schema(engine: object) -> None:
                         """
                         INSERT INTO transactions_new (
                             id,
+                            order_id,
                             portfolio_id,
                             security_id,
                             date,
@@ -364,6 +359,7 @@ def migrate_sqlite_schema(engine: object) -> None:
                             currency_exchange_rate
                         ) VALUES (
                             :id,
+                            :order_id,
                             :portfolio_id,
                             :security_id,
                             :date,
@@ -387,6 +383,146 @@ def migrate_sqlite_schema(engine: object) -> None:
         _migrate_price_history_decimal(connection)
         _migrate_fx_rate_history_decimal(connection)
         _migrate_alert_account_names(connection)
+        _migrate_legacy_transactions_to_orders(connection)
+
+
+def _ensure_orders_table(connection: object) -> None:
+    tables = {
+        row[0]
+        for row in connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "orders" in tables:
+        return
+    connection.execute(
+        text(
+            """
+            CREATE TABLE orders (
+                id INTEGER NOT NULL,
+                portfolio_id INTEGER NOT NULL,
+                security_id INTEGER,
+                order_type VARCHAR(8) NOT NULL,
+                status VARCHAR(9) NOT NULL DEFAULT 'PENDING',
+                target_quantity DECIMAL(32, 10),
+                target_price DECIMAL(32, 10),
+                target_cash_amount DECIMAL(32, 10),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                executed_at DATETIME,
+                PRIMARY KEY (id),
+                FOREIGN KEY(portfolio_id) REFERENCES portfolios (id),
+                FOREIGN KEY(security_id) REFERENCES securities (id)
+            )
+            """
+        )
+    )
+
+
+def _migrate_legacy_transactions_to_orders(connection: object) -> None:
+    tables = {
+        row[0]
+        for row in connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "transactions" not in tables or "orders" not in tables:
+        return
+
+    transaction_columns = {
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(transactions)")).fetchall()
+    }
+    if "order_id" not in transaction_columns:
+        return
+
+    rows = connection.execute(
+        text(
+            """
+            SELECT
+                id,
+                portfolio_id,
+                security_id,
+                type,
+                quantity,
+                price,
+                total_value,
+                date
+            FROM transactions
+            WHERE order_id IS NULL
+            ORDER BY date, id
+            """
+        )
+    ).mappings().all()
+
+    for row in rows:
+        order_type = _order_type_from_transaction_type(str(row["type"]), row["security_id"])
+        target_quantity = _decimal_or_none(row["quantity"])
+        target_price = _decimal_or_none(row["price"]) if row["security_id"] is not None else None
+        target_cash_amount = (
+            _decimal_or_none(abs(Decimal(str(row["total_value"]))))
+            if order_type in {"DEPOSIT", "WITHDRAW"}
+            else None
+        )
+        transaction_timestamp = row["date"]
+
+        connection.execute(
+            text(
+                """
+                INSERT INTO orders (
+                    portfolio_id,
+                    security_id,
+                    order_type,
+                    status,
+                    target_quantity,
+                    target_price,
+                    target_cash_amount,
+                    created_at,
+                    executed_at
+                ) VALUES (
+                    :portfolio_id,
+                    :security_id,
+                    :order_type,
+                    'EXECUTED',
+                    :target_quantity,
+                    :target_price,
+                    :target_cash_amount,
+                    :created_at,
+                    :executed_at
+                )
+                """
+            ),
+            {
+                "portfolio_id": row["portfolio_id"],
+                "security_id": row["security_id"],
+                "order_type": order_type,
+                "target_quantity": target_quantity,
+                "target_price": target_price,
+                "target_cash_amount": target_cash_amount,
+                "created_at": transaction_timestamp,
+                "executed_at": transaction_timestamp,
+            },
+        )
+        new_order_id = connection.execute(text("SELECT last_insert_rowid()")).scalar_one()
+        connection.execute(
+            text("UPDATE transactions SET order_id = :order_id WHERE id = :transaction_id"),
+            {"order_id": new_order_id, "transaction_id": row["id"]},
+        )
+
+
+def _order_type_from_transaction_type(transaction_type: str, security_id: object) -> str:
+    if transaction_type == "BUY":
+        return "BUY"
+    if transaction_type == "SELL":
+        return "SELL"
+    if transaction_type == "DEPOSIT":
+        return "DEPOSIT"
+    if transaction_type == "WITHDRAWAL":
+        return "WITHDRAW"
+    if transaction_type == "DIVIDEND":
+        return "DEPOSIT"
+    if transaction_type == "SPLIT":
+        return "BUY"
+    return "BUY" if security_id is not None else "DEPOSIT"
 
 
 def _migrate_alert_account_names(connection: object) -> None:

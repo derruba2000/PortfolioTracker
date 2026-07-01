@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select, text
@@ -10,10 +11,18 @@ from portfolio_management.db.init_db import migrate_sqlite_schema
 from portfolio_management.db.models import (
     Account,
     AccountStrategy,
+    AssetClass,
     Benchmark,
     Broker,
     ImportErrorLog,
+    Order,
+    OrderStatus,
+    OrderType,
+    Portfolio,
+    Security,
     Strategy,
+    Transaction,
+    TransactionType,
 )
 from portfolio_management.db.seed import seed_defaults
 from portfolio_management.services.import_errors import add_import_error
@@ -60,6 +69,99 @@ def test_sqlite_decimal_round_trips_exactly() -> None:
         assert account_strategy.allocation_weight == Decimal(
             "0.3333333333"
         )
+
+
+def test_orders_table_has_required_columns() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(orders)")).fetchall()
+        }
+
+    assert columns == {
+        "id",
+        "portfolio_id",
+        "security_id",
+        "order_type",
+        "status",
+        "target_quantity",
+        "target_price",
+        "target_cash_amount",
+        "created_at",
+        "executed_at",
+    }
+
+
+def test_transactions_table_has_nullable_order_id_column() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        transaction_columns = {
+            row[1]: row
+            for row in connection.execute(text("PRAGMA table_info(transactions)")).fetchall()
+        }
+
+    assert "order_id" in transaction_columns
+    # PRAGMA table_info: row[3] is NOT NULL flag (1 yes / 0 no).
+    assert transaction_columns["order_id"][3] == 0
+
+
+def test_legacy_transactions_are_backfilled_into_executed_orders() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Main", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="BTC-USD",
+            name="Bitcoin",
+            asset_class=AssetClass.CRYPTO,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 6, 1, 10, 0, 0),
+                    type=TransactionType.BUY,
+                    quantity=Decimal("0.015"),
+                    price=Decimal("50000"),
+                    fees=Decimal("1"),
+                    total_value=Decimal("751"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                Transaction(
+                    portfolio=portfolio,
+                    security=None,
+                    date=datetime(2026, 6, 1, 9, 0, 0),
+                    type=TransactionType.DEPOSIT,
+                    quantity=Decimal("1"),
+                    price=Decimal("1000"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("1000"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+            ]
+        )
+        session.commit()
+
+    migrate_sqlite_schema(engine)
+
+    with Session(engine) as session:
+        transactions = session.scalars(select(Transaction).order_by(Transaction.id)).all()
+        orders = session.scalars(select(Order).order_by(Order.id)).all()
+
+    assert len(orders) == len(transactions)
+    assert all(transaction.order_id is not None for transaction in transactions)
+    assert all(order.status == OrderStatus.EXECUTED for order in orders)
+    assert {order.order_type for order in orders} == {OrderType.BUY, OrderType.DEPOSIT}
 
 
 def test_import_error_log_records_pipeline_message_and_timestamp() -> None:
@@ -249,26 +351,28 @@ def test_transaction_schema_migration_preserves_decimal_values() -> None:
     with engine.begin() as connection:
         type_rows = connection.execute(text("PRAGMA table_info(transactions)")).fetchall()
         type_by_column = {row[1]: row[2].upper() for row in type_rows}
+        columns = {row[1] for row in type_rows}
         migrated_row = connection.execute(
             text(
                 "SELECT quantity, price, fees, total_value, currency_exchange_rate FROM transactions WHERE id = 1"
             )
         ).fetchone()
 
-    assert "INT" in type_by_column["quantity"]
+    assert "DECIMAL" in type_by_column["quantity"]
     assert "DECIMAL" in type_by_column["price"]
     assert "DECIMAL" in type_by_column["fees"]
     assert "DECIMAL" in type_by_column["total_value"]
     assert "DECIMAL" in type_by_column["currency_exchange_rate"]
     assert migrated_row is not None
-    assert migrated_row[0] == 2
+    assert Decimal(str(migrated_row[0])) == Decimal("2")
     assert Decimal(str(migrated_row[1])) == Decimal("100.25")
     assert Decimal(str(migrated_row[2])) == Decimal("1.50")
     assert Decimal(str(migrated_row[3])) == Decimal("202.00")
     assert Decimal(str(migrated_row[4])) == Decimal("1.2345")
+    assert "order_id" in columns
 
 
-def test_transaction_schema_migration_rejects_fractional_quantity() -> None:
+def test_transaction_schema_migration_preserves_fractional_quantity() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
 
     with engine.begin() as connection:
@@ -336,12 +440,14 @@ def test_transaction_schema_migration_rejects_fractional_quantity() -> None:
             )
         )
 
-    try:
-        migrate_sqlite_schema(engine)
-    except ValueError as exc:
-        assert "Cannot migrate quantity to INTEGER without data loss" in str(exc)
-    else:
-        raise AssertionError("Expected migration to fail for fractional quantity.")
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        migrated_quantity = connection.execute(
+            text("SELECT quantity FROM transactions WHERE id = 1")
+        ).scalar_one()
+
+    assert Decimal(str(migrated_quantity)) == Decimal("2.5")
 
 
 def test_history_schema_migration_adds_ohlcv_and_preserves_close_values() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
+import re
 
 import pandas as pd
 from sqlalchemy import select
@@ -386,6 +387,21 @@ def _trade_settlement_transaction_ids(
             ].append(transaction)
 
     matched_ids: set[int] = set()
+    settlement_pattern = re.compile(r"auto cash settlement for trade #(\d+)", re.IGNORECASE)
+
+    for transaction, _, _, _, security in rows:
+        if security is not None or transaction.type not in {
+            TransactionType.DEPOSIT,
+            TransactionType.WITHDRAWAL,
+        }:
+            continue
+        description = (transaction.description or "").strip()
+        match = settlement_pattern.search(description)
+        if match is None:
+            continue
+        matched_ids.add(transaction.id)
+        matched_ids.add(int(match.group(1)))
+
     for key, trades in trades_by_key.items():
         cash_transactions = cash_by_key.get(key, [])
         for trade, cash_transaction in zip(trades, cash_transactions, strict=False):

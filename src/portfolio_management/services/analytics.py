@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+import re
 from tempfile import NamedTemporaryFile
 
 import pandas as pd
@@ -462,7 +463,7 @@ def _calculate_position_records(
                 "Asset Class": security.asset_class.value,
                 "Currency": security.currency_code,
                 "Reporting Currency": reporting_currency or security.currency_code,
-                "Quantity": str(quantity),
+                "Quantity": _format_decimal_string(quantity),
                 "Average Cost": str(average_cost),
                 "Latest Price": str(latest_price) if latest_price is not None else "",
                 "Market Value": str(market_value) if market_value is not None else "",
@@ -569,7 +570,7 @@ def _calculate_realized_pnl_records(
                     "Account": account.name,
                     "Portfolio": portfolio.name,
                     "Ticker": security.ticker,
-                    "Quantity Sold": str(transaction.quantity),
+                    "Quantity Sold": _format_decimal_string(transaction.quantity),
                     "Proceeds": str(proceeds),
                     "Cost Basis": str(cost_basis),
                     "Realized P&L": str(proceeds - cost_basis),
@@ -585,10 +586,16 @@ def _portfolio_values_by_day(
     start_date: date,
     end_date: date,
 ) -> dict[date, Decimal]:
+    settlement_transaction_ids = _trade_settlement_transaction_ids(rows)
     values: dict[date, Decimal] = {}
     current_date = start_date
     while current_date <= end_date:
-        values[current_date] = _portfolio_value_on_date(session, rows, current_date)
+        values[current_date] = _portfolio_value_on_date(
+            session,
+            rows,
+            current_date,
+            settlement_transaction_ids,
+        )
         current_date += timedelta(days=1)
     return values
 
@@ -597,6 +604,7 @@ def _portfolio_value_on_date(
     session: Session,
     rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
     as_of_date: date,
+    settlement_transaction_ids: set[int],
 ) -> Decimal:
     quantities: defaultdict[int, Decimal] = defaultdict(Decimal)
     cash_by_currency: defaultdict[str, Decimal] = defaultdict(Decimal)
@@ -615,14 +623,24 @@ def _portfolio_value_on_date(
 
         if transaction.type == TransactionType.BUY:
             quantities[security.id] += transaction.quantity
-            cash_by_currency[account.currency_code] -= _convert_to_account_currency(
-                session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
-            )
+            if transaction.id not in settlement_transaction_ids:
+                cash_by_currency[account.currency_code] -= _convert_to_account_currency(
+                    session,
+                    transaction.total_value,
+                    security.currency_code,
+                    account.currency_code,
+                    as_of_date,
+                )
         elif transaction.type == TransactionType.SELL:
             quantities[security.id] -= transaction.quantity
-            cash_by_currency[account.currency_code] += _convert_to_account_currency(
-                session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
-            )
+            if transaction.id not in settlement_transaction_ids:
+                cash_by_currency[account.currency_code] += _convert_to_account_currency(
+                    session,
+                    transaction.total_value,
+                    security.currency_code,
+                    account.currency_code,
+                    as_of_date,
+                )
         elif transaction.type == TransactionType.DIVIDEND:
             cash_by_currency[account.currency_code] += _convert_to_account_currency(
                 session, transaction.total_value, security.currency_code, account.currency_code, as_of_date
@@ -647,13 +665,76 @@ def _portfolio_value_on_date(
 def _external_cash_flows_by_day(
     rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
 ) -> defaultdict[date, Decimal]:
+    settlement_transaction_ids = _trade_settlement_transaction_ids(rows)
     cash_flows: defaultdict[date, Decimal] = defaultdict(Decimal)
     for transaction, *_ in rows:
+        if transaction.id in settlement_transaction_ids:
+            continue
         if transaction.type == TransactionType.DEPOSIT:
             cash_flows[transaction.date.date()] += transaction.total_value
         elif transaction.type == TransactionType.WITHDRAWAL:
             cash_flows[transaction.date.date()] -= abs(transaction.total_value)
     return cash_flows
+
+
+def _trade_settlement_transaction_ids(
+    rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
+) -> set[int]:
+    trades_by_key: defaultdict[
+        tuple[int, date, str, TransactionType],
+        list[Transaction],
+    ] = defaultdict(list)
+    cash_by_key: defaultdict[
+        tuple[int, date, str, TransactionType],
+        list[Transaction],
+    ] = defaultdict(list)
+
+    matched_ids: set[int] = set()
+    settlement_pattern = re.compile(r"auto cash settlement for trade #(\d+)", re.IGNORECASE)
+
+    for transaction, portfolio, _, _, security in rows:
+        description = (transaction.description or "").strip()
+        if not description:
+            continue
+
+        marker_match = settlement_pattern.search(description)
+        if marker_match and security is None and transaction.type in {
+            TransactionType.DEPOSIT,
+            TransactionType.WITHDRAWAL,
+        }:
+            matched_ids.add(transaction.id)
+            matched_ids.add(int(marker_match.group(1)))
+            continue
+
+        normalized_description = description.casefold()
+        transaction_date = transaction.date.date()
+        if security is not None and transaction.type in {
+            TransactionType.BUY,
+            TransactionType.SELL,
+        }:
+            cash_type = (
+                TransactionType.WITHDRAWAL
+                if transaction.type == TransactionType.BUY
+                else TransactionType.DEPOSIT
+            )
+            trades_by_key[
+                (portfolio.id, transaction_date, normalized_description, cash_type)
+            ].append(transaction)
+        elif security is None and transaction.type in {
+            TransactionType.DEPOSIT,
+            TransactionType.WITHDRAWAL,
+        }:
+            cash_by_key[
+                (portfolio.id, transaction_date, normalized_description, transaction.type)
+            ].append(transaction)
+
+    for key, trades in trades_by_key.items():
+        cash_transactions = cash_by_key.get(key, [])
+        for trade, cash_transaction in zip(trades, cash_transactions, strict=False):
+            matched_ids.add(trade.id)
+            matched_ids.add(cash_transaction.id)
+
+    return matched_ids
 
 
 def _apply_security_transaction(state: dict[str, object], transaction: Transaction) -> None:
@@ -859,3 +940,13 @@ def _decimal_or_zero(value: object) -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal("0")
+
+
+def _format_decimal_string(value: object) -> str:
+    try:
+        decimal_value = Decimal(str(value))
+    except Exception:
+        return str(value)
+    if decimal_value == decimal_value.to_integral_value():
+        return str(decimal_value.quantize(Decimal("1")))
+    return format(decimal_value.normalize(), "f").rstrip("0").rstrip(".")

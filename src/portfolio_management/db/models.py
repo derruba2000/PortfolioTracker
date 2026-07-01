@@ -43,6 +43,19 @@ class TransactionType(StrEnum):
     WITHDRAWAL = "WITHDRAWAL"
 
 
+class OrderType(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+    DEPOSIT = "DEPOSIT"
+    WITHDRAW = "WITHDRAW"
+
+
+class OrderStatus(StrEnum):
+    PENDING = "PENDING"
+    EXECUTED = "EXECUTED"
+    CANCELLED = "CANCELLED"
+
+
 class AssetClassOption(Base):
     __tablename__ = "asset_classes"
 
@@ -161,6 +174,7 @@ class Portfolio(Base):
 
     account: Mapped[Account] = relationship(back_populates="portfolios")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="portfolio")
+    orders: Mapped[list["Order"]] = relationship(back_populates="portfolio")
 
     __table_args__ = (
         UniqueConstraint("account_id", "name", name="uq_portfolios_account_name"),
@@ -216,10 +230,39 @@ class Security(Base):
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
 
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="security")
+    orders: Mapped[list["Order"]] = relationship(back_populates="security")
     price_history: Mapped[list["PriceHistory"]] = relationship(
         back_populates="security",
         cascade="all, delete-orphan",
     )
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    security_id: Mapped[int | None] = mapped_column(ForeignKey("securities.id"))
+    order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), nullable=False)
+    status: Mapped[OrderStatus] = mapped_column(
+        Enum(OrderStatus),
+        nullable=False,
+        default=OrderStatus.PENDING,
+    )
+    target_quantity: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    target_cash_amount: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    portfolio: Mapped[Portfolio] = relationship(back_populates="orders")
+    security: Mapped[Security | None] = relationship(back_populates="orders")
+    transactions: Mapped[list["Transaction"]] = relationship(back_populates="order")
 
 
 class Benchmark(Base):
@@ -234,12 +277,13 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"))
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
     security_id: Mapped[int | None] = mapped_column(ForeignKey("securities.id"))
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     type: Mapped[TransactionType] = mapped_column(Enum(TransactionType), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
-    quantity: Mapped[int] = mapped_column(nullable=False, default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
     price: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
     fees: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
     total_value: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
@@ -251,6 +295,7 @@ class Transaction(Base):
 
     portfolio: Mapped[Portfolio] = relationship(back_populates="transactions")
     security: Mapped[Security | None] = relationship(back_populates="transactions")
+    order: Mapped[Order | None] = relationship(back_populates="transactions")
 
 
 class ImportErrorLog(Base):

@@ -33,6 +33,7 @@ from portfolio_management.tabs.dashboard import (
 )
 from portfolio_management.tabs.data_entry import build_data_entry_tab, data_entry_mode_changed
 from portfolio_management.tabs.export import build_export_tab, _export_scope_changed
+from portfolio_management.tabs.orders import build_orders_tab, refresh_orders_for_mode
 from portfolio_management.tabs.performance import build_performance_tab, refresh_performance_for_mode
 from portfolio_management.tabs.portfolios import (
     build_portfolios_tab,
@@ -194,7 +195,10 @@ def build_app() -> gr.Blocks:
                 accounts = build_accounts_tab(selected_account, mode_toggle)
                 portfolios = build_portfolios_tab(selected_account, mode_toggle, active_only_checkbox)
                 build_securities_tab()
-        data_entry = build_data_entry_tab(selected_account, selected_portfolio, mode_toggle)
+        with gr.Tab("Orders and Transactions"):
+            with gr.Tabs():
+                orders = build_orders_tab(mode_toggle)
+                data_entry = build_data_entry_tab(selected_account, selected_portfolio, mode_toggle)
         performance = build_performance_tab(mode_toggle)
         tax = build_tax_tab(mode_toggle)
         build_alerts_tab()
@@ -319,6 +323,11 @@ def build_app() -> gr.Blocks:
                 dashboard["currency_allocation_plot"],
                 tax["tax_report"],
             ],
+        )
+        mode_toggle.change(
+            fn=refresh_orders_for_mode,
+            inputs=[mode_toggle],
+            outputs=[orders["orders_table"]],
         )
         mode_toggle.change(
             fn=refresh_performance_for_mode,
