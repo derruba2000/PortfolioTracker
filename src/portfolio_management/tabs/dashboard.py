@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import gradio as gr
+import pandas as pd
 
 from portfolio_management.services.analytics import (
     allocation_by_asset_class,
@@ -158,27 +159,115 @@ def refresh_dashboard(
     asset_class_filter: str | None = None,
 ) -> tuple[Any, ...]:
     """Returns (mode_banner_html, summary, positions, asset_alloc, currency_alloc)."""
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    ).copy()
+    filtered_positions = _filter_dashboard_positions(
+        positions,
+        account_filter=account_filter,
+        portfolio_filter=position_portfolio_filter,
+        asset_class_filter=asset_class_filter,
+    )
     return (
         mode_banner(account_mode),
         dashboard_summary_table(account_mode, reporting_currency, portfolio_choice),
-        dashboard_positions(
-            account_mode,
-            reporting_currency,
-            portfolio_choice,
-            account_filter,
-            position_portfolio_filter,
-            asset_class_filter,
+        _format_dashboard_positions_table(filtered_positions),
+        _allocation_from_positions(
+            filtered_positions,
+            group_column="Asset Class",
+            output_column="Asset Class",
         ),
-        allocation_by_asset_class(
-            account_mode=account_mode,
-            reporting_currency=reporting_currency,
-            portfolio_id=parse_portfolio_filter(portfolio_choice),
+        _allocation_from_positions(
+            filtered_positions,
+            group_column="Currency",
+            output_column="Currency",
         ),
-        allocation_by_currency(
-            account_mode=account_mode,
-            reporting_currency=reporting_currency,
-            portfolio_id=parse_portfolio_filter(portfolio_choice),
+    )
+
+
+def dashboard_positions_and_charts(
+    account_mode: str,
+    reporting_currency: str,
+    portfolio_choice: str | int | None = None,
+    account_filter: str | None = None,
+    position_portfolio_filter: str | None = None,
+    asset_class_filter: str | None = None,
+) -> tuple[object, object, object]:
+    positions = current_positions(
+        account_mode=account_mode,
+        reporting_currency=reporting_currency,
+        portfolio_id=parse_portfolio_filter(portfolio_choice),
+    ).copy()
+    filtered_positions = _filter_dashboard_positions(
+        positions,
+        account_filter=account_filter,
+        portfolio_filter=position_portfolio_filter,
+        asset_class_filter=asset_class_filter,
+    )
+    return (
+        _format_dashboard_positions_table(filtered_positions),
+        _allocation_from_positions(
+            filtered_positions,
+            group_column="Asset Class",
+            output_column="Asset Class",
         ),
+        _allocation_from_positions(
+            filtered_positions,
+            group_column="Currency",
+            output_column="Currency",
+        ),
+    )
+
+
+def _format_dashboard_positions_table(positions: object) -> object:
+    positions = positions.copy()
+    if "Portfolio" in positions.columns and "Portfolio URL" in positions.columns:
+        positions["Portfolio"] = positions.apply(
+            lambda row: portfolio_link(row["Portfolio"], row["Portfolio URL"]),
+            axis=1,
+        )
+        positions = positions.drop(columns=["Portfolio URL"])
+    if "Ticker" in positions.columns:
+        positions["Ticker"] = positions["Ticker"].map(ticker_link)
+    if "Quantity" in positions.columns:
+        positions["Quantity"] = positions["Quantity"].map(format_integer_with_commas)
+    for column in ["Average Cost", "Latest Price", "Market Value", "Unrealized P&L"]:
+        if column in positions.columns:
+            positions[column] = positions[column].map(format_two_decimals)
+    return positions
+
+
+def _allocation_from_positions(
+    positions: object,
+    group_column: str,
+    output_column: str,
+) -> object:
+    if (
+        not hasattr(positions, "columns")
+        or group_column not in positions.columns
+        or "Market Value" not in positions.columns
+    ):
+        return pd.DataFrame(columns=[output_column, "Market Value"])
+
+    allocation = positions[[group_column, "Market Value"]].copy()
+    allocation[group_column] = allocation[group_column].astype(str).str.strip()
+    allocation = allocation[allocation[group_column] != ""]
+    allocation["Market Value"] = pd.to_numeric(
+        allocation["Market Value"],
+        errors="coerce",
+    )
+    allocation = allocation.dropna(subset=["Market Value"])
+    if allocation.empty:
+        return pd.DataFrame(columns=[output_column, "Market Value"])
+
+    return (
+        allocation
+        .groupby(group_column, as_index=False)["Market Value"]
+        .sum()
+        .sort_values(group_column)
+        .rename(columns={group_column: output_column})
     )
 
 
@@ -245,7 +334,7 @@ def dashboard_position_account_changed(
     return (
         gr.update(choices=portfolio_choices, value=ALL_POSITION_PORTFOLIOS),
         gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
-        dashboard_positions(
+        *dashboard_positions_and_charts(
             account_mode,
             reporting_currency,
             portfolio_choice,
@@ -272,7 +361,7 @@ def dashboard_position_portfolio_changed(
     )
     return (
         gr.update(choices=asset_class_choices, value=ALL_ASSET_CLASSES),
-        dashboard_positions(
+        *dashboard_positions_and_charts(
             account_mode,
             reporting_currency,
             portfolio_choice,

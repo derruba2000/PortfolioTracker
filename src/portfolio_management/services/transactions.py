@@ -21,10 +21,6 @@ from portfolio_management.db.models import (
 )
 from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import (
-    DEFAULT_PORTFOLIO_NAME,
-    get_or_create_account,
-    get_or_create_broker,
-    get_or_create_portfolio,
     parse_choice_id,
 )
 
@@ -91,7 +87,7 @@ class TransactionInput:
     broker_name: str = DEFAULT_BROKER_NAME
     account_name: str = DEFAULT_ACCOUNT_NAME
     portfolio_id: int | None = None
-    portfolio_name: str = DEFAULT_PORTFOLIO_NAME
+    portfolio_name: str | None = None
     account_currency_code: str = DEFAULT_CURRENCY_CODE
     tax_wrapper_type: str | None = None
     is_simulated: bool = False
@@ -165,8 +161,8 @@ def transfer_cash(
         if source_account.currency_code != target_account.currency_code:
             raise ValueError("Source and target accounts must have the same currency code.")
 
-        source_portfolio = get_or_create_portfolio(session, source_account, DEFAULT_PORTFOLIO_NAME)
-        target_portfolio = get_or_create_portfolio(session, target_account, DEFAULT_PORTFOLIO_NAME)
+        source_portfolio = _select_existing_portfolio_for_account(session, source_account)
+        target_portfolio = _select_existing_portfolio_for_account(session, target_account)
 
         parsed_transfer_date = _parse_datetime(transfer_date)
         transfer_note = (
@@ -323,7 +319,7 @@ def transaction_input_from_mapping(raw_values: dict[str, Any]) -> TransactionInp
         broker_name=_clean_string(values.get("broker_name")) or DEFAULT_BROKER_NAME,
         account_name=_clean_string(values.get("account_name")) or DEFAULT_ACCOUNT_NAME,
         portfolio_id=_parse_optional_int(values.get("portfolio_id")),
-        portfolio_name=_clean_string(values.get("portfolio_name")) or DEFAULT_PORTFOLIO_NAME,
+        portfolio_name=_clean_string(values.get("portfolio_name")) or None,
         account_currency_code=(
             _clean_string(values.get("account_currency_code")) or DEFAULT_CURRENCY_CODE
         ).upper(),
@@ -425,20 +421,23 @@ def _resolve_portfolio(session: Session, transaction_input: TransactionInput) ->
             raise ValueError(f"Portfolio id {transaction_input.portfolio_id} does not exist.")
         return portfolio
 
-    broker = get_or_create_broker(session, transaction_input.broker_name)
-    account = get_or_create_account(
-        session=session,
-        broker=broker,
-        name=transaction_input.account_name,
-        currency_code=transaction_input.account_currency_code,
-        tax_wrapper_type=transaction_input.tax_wrapper_type,
-        is_simulated=transaction_input.is_simulated,
+    raise ValueError(
+        "Portfolio is required. Create one from Master Data / Portfolios, then select it before saving transactions."
     )
-    return get_or_create_portfolio(
-        session=session,
-        account=account,
-        name=transaction_input.portfolio_name,
+
+
+def _select_existing_portfolio_for_account(session: Session, account: Account) -> Portfolio:
+    portfolio = session.scalar(
+        select(Portfolio)
+        .where(Portfolio.account_id == account.id, Portfolio.is_active.is_(True))
+        .order_by(Portfolio.name, Portfolio.id)
     )
+    if portfolio is None:
+        raise ValueError(
+            f"Account '{account.name}' has no active portfolio. "
+            "Create one in Master Data / Portfolios before transferring cash."
+        )
+    return portfolio
 
 
 def _get_or_create_security(

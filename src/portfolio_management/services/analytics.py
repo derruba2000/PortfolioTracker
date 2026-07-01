@@ -374,6 +374,9 @@ def _calculate_position_records(
     for transaction, portfolio, account, broker, security in rows:
         if transaction.date.date() > as_of_date:
             continue
+        if transaction.type in {TransactionType.DEPOSIT, TransactionType.WITHDRAWAL}:
+            _apply_cash_transaction(cash_state, transaction, portfolio, account)
+            continue
         if security is None:
             _apply_cash_transaction(cash_state, transaction, portfolio, account)
             continue
@@ -602,6 +605,10 @@ def _portfolio_value_on_date(
         if transaction.date.date() > as_of_date:
             continue
 
+        if transaction.type in {TransactionType.DEPOSIT, TransactionType.WITHDRAWAL}:
+            _apply_cash_to_currency(cash_by_currency, transaction, account.currency_code)
+            continue
+
         if security is None:
             _apply_cash_to_currency(cash_by_currency, transaction, account.currency_code)
             continue
@@ -641,9 +648,7 @@ def _external_cash_flows_by_day(
     rows: list[tuple[Transaction, Portfolio, Account, Broker, Security | None]],
 ) -> defaultdict[date, Decimal]:
     cash_flows: defaultdict[date, Decimal] = defaultdict(Decimal)
-    for transaction, _, _, _, security in rows:
-        if security is not None:
-            continue
+    for transaction, *_ in rows:
         if transaction.type == TransactionType.DEPOSIT:
             cash_flows[transaction.date.date()] += transaction.total_value
         elif transaction.type == TransactionType.WITHDRAWAL:
@@ -678,8 +683,7 @@ def _apply_cash_transaction(
     account: Account,
 ) -> None:
     key = (portfolio.id, account.currency_code)
-    if transaction.security_id is None:
-        _apply_cash_to_portfolio(cash_state, key, transaction)
+    _apply_cash_to_portfolio(cash_state, key, transaction)
 
 
 def _apply_cash_to_portfolio(

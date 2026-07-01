@@ -146,11 +146,15 @@ def _account_choices_for_mode(account_mode: str) -> list[str]:
     return account_choices(include_simulated=True, account_mode=account_mode)
 
 
+def _selected_or_first(current_value: str | None, choices: list[str]) -> str | None:
+    return current_value if current_value in choices else choices[0] if choices else None
+
+
 def _filter_changed(account_mode: str) -> tuple[Any, ...]:
     accounts = _account_choices_for_mode(account_mode)
-    selected_account = accounts[0] if accounts else None
+    selected_account = _selected_or_first(None, accounts)
     portfolios = portfolio_choices_for_account(selected_account)
-    selected_portfolio = portfolios[0] if portfolios else None
+    selected_portfolio = _selected_or_first(None, portfolios)
     return (
         transactions_table(account_mode),
         gr.update(choices=accounts, value=selected_account),
@@ -251,6 +255,11 @@ def build_data_entry_tab(
     selected_portfolio: str | None,
     mode_toggle: gr.Radio,
 ) -> dict[str, Any]:
+    initial_accounts = _account_choices_for_mode(LIVE_MODE)
+    selected_account = _selected_or_first(selected_account, initial_accounts)
+    initial_portfolios = portfolio_choices_for_account(selected_account)
+    selected_portfolio = _selected_or_first(selected_portfolio, initial_portfolios)
+
     with gr.Tab("Transactions Entry"):
         status = gr.Textbox(label="Status", interactive=False)
         with gr.Tabs():
@@ -258,12 +267,12 @@ def build_data_entry_tab(
                 with gr.Row():
                     account_choice = gr.Dropdown(
                         label="Account",
-                        choices=account_choices(include_simulated=True, account_mode=LIVE_MODE),
+                        choices=initial_accounts,
                         value=selected_account,
                     )
                     portfolio_choice = gr.Dropdown(
                         label="Portfolio",
-                        choices=portfolio_choices_for_account(selected_account),
+                        choices=initial_portfolios,
                         value=selected_portfolio,
                     )
 
@@ -355,12 +364,12 @@ def build_data_entry_tab(
                 with gr.Row():
                     transfer_source_account = gr.Dropdown(
                         label="Transfer Source Account",
-                        choices=account_choices(include_simulated=True, account_mode=LIVE_MODE),
+                        choices=initial_accounts,
                         value=selected_account,
                     )
                     transfer_target_account = gr.Dropdown(
                         label="Transfer Target Account",
-                        choices=account_choices(include_simulated=True, account_mode=LIVE_MODE),
+                        choices=initial_accounts,
                         value=selected_account,
                     )
 

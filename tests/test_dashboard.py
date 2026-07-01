@@ -8,6 +8,7 @@ from portfolio_management.tabs.dashboard import (
     ALL_POSITION_PORTFOLIOS,
     dashboard_position_filter_choices,
     dashboard_positions,
+    dashboard_positions_and_charts,
 )
 
 
@@ -134,3 +135,25 @@ def test_dashboard_position_filters_ignore_surrounding_whitespace(monkeypatch) -
 
     assert len(filtered) == 1
     assert filtered.iloc[0]["Ticker"].endswith(">AAA</a>")
+
+
+def test_dashboard_chart_allocations_follow_active_filters(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "portfolio_management.tabs.dashboard.current_positions",
+        lambda **_: _positions(),
+    )
+
+    _, asset_allocation, currency_allocation = dashboard_positions_and_charts(
+        "Live Mode",
+        "GBP",
+        account_filter="ISA",
+        position_portfolio_filter="Core",
+        asset_class_filter="EQUITY",
+    )
+
+    assert asset_allocation.to_dict("records") == [
+        {"Asset Class": "EQUITY", "Market Value": 120.0}
+    ]
+    assert currency_allocation.to_dict("records") == [
+        {"Currency": "GBP", "Market Value": 120.0}
+    ]

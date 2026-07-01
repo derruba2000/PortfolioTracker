@@ -125,6 +125,64 @@ def test_positions_and_pnl_exclude_simulated_accounts_by_default(monkeypatch) ->
     assert currency_allocation.loc[0, "Currency"] == "USD"
 
 
+def test_cash_security_deposit_appears_as_sandbox_cash_position(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="SIMULATION LAB")
+        account = Account(
+            broker=broker,
+            name="GBP Test Environment",
+            currency_code="GBP",
+            is_simulated=True,
+        )
+        portfolio = Portfolio(account=account, name="The Classic Balanced")
+        cash_security = Security(
+            ticker="GBPUSD=X",
+            name="CASH Symbol British GBP",
+            asset_class=AssetClass.CASH,
+            currency_code="GBP",
+        )
+        session.add(
+            Transaction(
+                portfolio=portfolio,
+                security=cash_security,
+                date=datetime(2026, 6, 28),
+                type=TransactionType.DEPOSIT,
+                quantity=1000,
+                price=Decimal("1"),
+                fees=Decimal("0"),
+                total_value=Decimal("1000"),
+                currency_exchange_rate=Decimal("1"),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "portfolio_management.services.analytics.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    positions = current_positions(account_mode=SANDBOX_MODE, as_of_date=date(2026, 6, 28))
+    summary = dashboard_summary(account_mode=SANDBOX_MODE, as_of_date=date(2026, 6, 28))
+    asset_allocation = allocation_by_asset_class(
+        account_mode=SANDBOX_MODE,
+        as_of_date=date(2026, 6, 28),
+    )
+
+    assert positions.loc[0, "Account"] == "GBP Test Environment"
+    assert positions.loc[0, "Portfolio"] == "The Classic Balanced"
+    assert positions.loc[0, "Ticker"] == "CASH"
+    assert positions.loc[0, "Name"] == "GBP Cash"
+    assert positions.loc[0, "Asset Class"] == "CASH"
+    assert Decimal(str(positions.loc[0, "Quantity"])) == Decimal("1000")
+    assert Decimal(str(positions.loc[0, "Market Value"])) == Decimal("1000")
+    assert Decimal(str(summary.loc[0, "Value"])) == Decimal("1000")
+    assert asset_allocation.loc[0, "Asset Class"] == "CASH"
+    assert asset_allocation.loc[0, "Market Value"] == 1000.0
+
+
 def test_twr_curve_links_daily_returns(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

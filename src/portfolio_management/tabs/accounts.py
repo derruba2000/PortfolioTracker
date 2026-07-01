@@ -38,7 +38,7 @@ def broker_dropdown_choices(include_inactive: bool = False) -> list[str]:
 
 
 def _broker_name_from_choice(broker_choice: str | None) -> str:
-    broker_name, _description, _active = broker_details(broker_choice)
+    broker_name, *_ = broker_details(broker_choice)
     return broker_name
 
 
@@ -47,7 +47,7 @@ def _broker_choice_for_name(
     include_inactive: bool = True,
 ) -> str | None:
     for choice in broker_dropdown_choices(include_inactive=include_inactive):
-        choice_name, _description, _active = broker_details(choice)
+        choice_name, *_ = broker_details(choice)
         if choice_name == broker_name:
             return choice
     return None

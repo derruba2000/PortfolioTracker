@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
 import pandas as pd
 from sqlalchemy import delete, select
@@ -10,8 +11,6 @@ from sqlalchemy.orm import Session
 from portfolio_management.db.models import Account, Broker, Portfolio, Transaction
 from portfolio_management.db.session import get_session_factory
 
-
-DEFAULT_PORTFOLIO_NAME = "Default Portfolio"
 PORTFOLIO_GOAL_CHOICES = [
     "Capital Growth",
     "Income",
@@ -40,6 +39,23 @@ PORTFOLIO_TIMELINE_CHOICES = [
     "3-5 years",
     "5-10 years",
     "10+ years",
+]
+
+BROKER_FEE_FIELD_ORDER = [
+    "trade_fee_fixed",
+    "trade_fee_percent",
+    "fx_fee_percent",
+    "spread_fee_percent",
+    "custody_fee_percent_annual",
+    "platform_fee_fixed_monthly",
+    "account_fee_fixed_monthly",
+    "inactivity_fee_fixed_monthly",
+    "withdrawal_fee_fixed",
+    "deposit_fee_fixed",
+    "stamp_duty_percent",
+    "regulatory_fee_percent",
+    "margin_interest_percent_annual",
+    "short_borrow_fee_percent_annual",
 ]
 
 
@@ -121,12 +137,42 @@ def create_account(
 def create_broker(
     broker_name: str,
     description: str = "",
+    trade_fee_fixed: str | int | float | Decimal = "0",
+    trade_fee_percent: str | int | float | Decimal = "0",
+    fx_fee_percent: str | int | float | Decimal = "0",
+    spread_fee_percent: str | int | float | Decimal = "0",
+    custody_fee_percent_annual: str | int | float | Decimal = "0",
+    platform_fee_fixed_monthly: str | int | float | Decimal = "0",
+    account_fee_fixed_monthly: str | int | float | Decimal = "0",
+    inactivity_fee_fixed_monthly: str | int | float | Decimal = "0",
+    withdrawal_fee_fixed: str | int | float | Decimal = "0",
+    deposit_fee_fixed: str | int | float | Decimal = "0",
+    stamp_duty_percent: str | int | float | Decimal = "0",
+    regulatory_fee_percent: str | int | float | Decimal = "0",
+    margin_interest_percent_annual: str | int | float | Decimal = "0",
+    short_borrow_fee_percent_annual: str | int | float | Decimal = "0",
 ) -> str:
     clean_name = (broker_name or "").strip()
     if not clean_name:
         raise ValueError("Broker is required.")
 
     session_factory = get_session_factory()
+    fee_values = _parse_broker_fee_values(
+        trade_fee_fixed,
+        trade_fee_percent,
+        fx_fee_percent,
+        spread_fee_percent,
+        custody_fee_percent_annual,
+        platform_fee_fixed_monthly,
+        account_fee_fixed_monthly,
+        inactivity_fee_fixed_monthly,
+        withdrawal_fee_fixed,
+        deposit_fee_fixed,
+        stamp_duty_percent,
+        regulatory_fee_percent,
+        margin_interest_percent_annual,
+        short_borrow_fee_percent_annual,
+    )
     with session_factory() as session:
         broker = get_or_create_broker(
             session,
@@ -134,6 +180,8 @@ def create_broker(
             description=(description or "").strip() or None,
         )
         broker.is_active = True
+        for field_name, value in fee_values.items():
+            setattr(broker, field_name, value)
         session.commit()
 
     return f"Saved broker '{broker.name}'."
@@ -144,6 +192,20 @@ def update_broker(
     broker_name: str,
     description: str,
     is_active: bool,
+    trade_fee_fixed: str | int | float | Decimal = "0",
+    trade_fee_percent: str | int | float | Decimal = "0",
+    fx_fee_percent: str | int | float | Decimal = "0",
+    spread_fee_percent: str | int | float | Decimal = "0",
+    custody_fee_percent_annual: str | int | float | Decimal = "0",
+    platform_fee_fixed_monthly: str | int | float | Decimal = "0",
+    account_fee_fixed_monthly: str | int | float | Decimal = "0",
+    inactivity_fee_fixed_monthly: str | int | float | Decimal = "0",
+    withdrawal_fee_fixed: str | int | float | Decimal = "0",
+    deposit_fee_fixed: str | int | float | Decimal = "0",
+    stamp_duty_percent: str | int | float | Decimal = "0",
+    regulatory_fee_percent: str | int | float | Decimal = "0",
+    margin_interest_percent_annual: str | int | float | Decimal = "0",
+    short_borrow_fee_percent_annual: str | int | float | Decimal = "0",
 ) -> str:
     broker_id = parse_choice_id(broker_choice)
     if broker_id is None:
@@ -154,6 +216,22 @@ def update_broker(
         raise ValueError("Broker name is required.")
 
     session_factory = get_session_factory()
+    fee_values = _parse_broker_fee_values(
+        trade_fee_fixed,
+        trade_fee_percent,
+        fx_fee_percent,
+        spread_fee_percent,
+        custody_fee_percent_annual,
+        platform_fee_fixed_monthly,
+        account_fee_fixed_monthly,
+        inactivity_fee_fixed_monthly,
+        withdrawal_fee_fixed,
+        deposit_fee_fixed,
+        stamp_duty_percent,
+        regulatory_fee_percent,
+        margin_interest_percent_annual,
+        short_borrow_fee_percent_annual,
+    )
     with session_factory() as session:
         broker = session.get(Broker, broker_id)
         if broker is None:
@@ -168,6 +246,8 @@ def update_broker(
         broker.name = clean_name
         broker.description = (description or "").strip() or None
         broker.is_active = bool(is_active)
+        for field_name, value in fee_values.items():
+            setattr(broker, field_name, value)
         session.commit()
 
     status = "enabled" if broker.is_active else "disabled"
@@ -238,17 +318,25 @@ def broker_choices(include_inactive: bool = False) -> list[str]:
     return [_broker_label(broker, include_status=include_inactive) for broker in rows]
 
 
-def broker_details(broker_choice: str | int | None) -> tuple[str, str, bool]:
+def broker_details(broker_choice: str | int | None) -> tuple[object, ...]:
     broker_id = parse_choice_id(broker_choice)
     if broker_id is None:
-        return "", "", True
+        return ("", "", True, *_empty_broker_fee_values())
 
     session_factory = get_session_factory()
     with session_factory() as session:
         broker = session.get(Broker, broker_id)
         if broker is None:
-            return "", "", True
-        return broker.name, broker.description or "", bool(broker.is_active)
+            return ("", "", True, *_empty_broker_fee_values())
+        return (
+            broker.name,
+            broker.description or "",
+            bool(broker.is_active),
+            *[
+                _format_decimal(getattr(broker, field_name, Decimal("0")))
+                for field_name in BROKER_FEE_FIELD_ORDER
+            ],
+        )
 
 
 def create_account_with_portfolio(
@@ -258,10 +346,15 @@ def create_account_with_portfolio(
     description: str = "",
     tax_wrapper_type: str = "",
     is_simulated: bool = False,
-    portfolio_name: str = DEFAULT_PORTFOLIO_NAME,
+    *,
+    portfolio_name: str,
     portfolio_description: str = "",
     portfolio_url: str = "",
 ) -> str:
+    clean_portfolio_name = (portfolio_name or "").strip()
+    if not clean_portfolio_name:
+        raise ValueError("Portfolio is required.")
+
     create_account(
         broker_name=broker_name,
         account_name=account_name,
@@ -272,7 +365,7 @@ def create_account_with_portfolio(
     )
     return create_portfolio(
         account_choice=_find_account_choice(broker_name, account_name),
-        portfolio_name=portfolio_name,
+        portfolio_name=clean_portfolio_name,
         description=portfolio_description,
         portfolio_url=portfolio_url,
     )
@@ -477,6 +570,93 @@ def get_or_create_broker(
     return broker
 
 
+def _parse_decimal(value: str | int | float | Decimal, field_label: str) -> Decimal:
+    if isinstance(value, Decimal):
+        parsed = value
+    else:
+        text_value = str(value).strip() if value is not None else ""
+        if text_value == "":
+            text_value = "0"
+        try:
+            parsed = Decimal(text_value)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"Invalid value for '{field_label}'.") from exc
+    if parsed < 0:
+        raise ValueError(f"'{field_label}' cannot be negative.")
+    return parsed
+
+
+def _format_decimal(value: Decimal | None) -> str:
+    if value is None:
+        return "0"
+    normalized = value.normalize()
+    if normalized == normalized.to_integral():
+        return str(normalized.quantize(Decimal("1")))
+    return format(normalized, "f").rstrip("0").rstrip(".")
+
+
+def _empty_broker_fee_values() -> list[str]:
+    return ["0" for _ in BROKER_FEE_FIELD_ORDER]
+
+
+def _parse_broker_fee_values(
+    trade_fee_fixed: str | int | float | Decimal,
+    trade_fee_percent: str | int | float | Decimal,
+    fx_fee_percent: str | int | float | Decimal,
+    spread_fee_percent: str | int | float | Decimal,
+    custody_fee_percent_annual: str | int | float | Decimal,
+    platform_fee_fixed_monthly: str | int | float | Decimal,
+    account_fee_fixed_monthly: str | int | float | Decimal,
+    inactivity_fee_fixed_monthly: str | int | float | Decimal,
+    withdrawal_fee_fixed: str | int | float | Decimal,
+    deposit_fee_fixed: str | int | float | Decimal,
+    stamp_duty_percent: str | int | float | Decimal,
+    regulatory_fee_percent: str | int | float | Decimal,
+    margin_interest_percent_annual: str | int | float | Decimal,
+    short_borrow_fee_percent_annual: str | int | float | Decimal,
+) -> dict[str, Decimal]:
+    labels_and_values = [
+        ("Trade Fee (Fixed)", "trade_fee_fixed", trade_fee_fixed),
+        ("Trade Fee (%)", "trade_fee_percent", trade_fee_percent),
+        ("FX Fee (%)", "fx_fee_percent", fx_fee_percent),
+        ("Spread Fee (%)", "spread_fee_percent", spread_fee_percent),
+        ("Custody Fee Annual (%)", "custody_fee_percent_annual", custody_fee_percent_annual),
+        (
+            "Platform Fee Monthly (Fixed)",
+            "platform_fee_fixed_monthly",
+            platform_fee_fixed_monthly,
+        ),
+        (
+            "Account Fee Monthly (Fixed)",
+            "account_fee_fixed_monthly",
+            account_fee_fixed_monthly,
+        ),
+        (
+            "Inactivity Fee Monthly (Fixed)",
+            "inactivity_fee_fixed_monthly",
+            inactivity_fee_fixed_monthly,
+        ),
+        ("Withdrawal Fee (Fixed)", "withdrawal_fee_fixed", withdrawal_fee_fixed),
+        ("Deposit Fee (Fixed)", "deposit_fee_fixed", deposit_fee_fixed),
+        ("Stamp Duty (%)", "stamp_duty_percent", stamp_duty_percent),
+        ("Regulatory Fee (%)", "regulatory_fee_percent", regulatory_fee_percent),
+        (
+            "Margin Interest Annual (%)",
+            "margin_interest_percent_annual",
+            margin_interest_percent_annual,
+        ),
+        (
+            "Short Borrow Fee Annual (%)",
+            "short_borrow_fee_percent_annual",
+            short_borrow_fee_percent_annual,
+        ),
+    ]
+    return {
+        field_name: _parse_decimal(raw_value, label)
+        for label, field_name, raw_value in labels_and_values
+    }
+
+
 def get_or_create_account(
     session: Session,
     broker: Broker,
@@ -508,7 +688,7 @@ def get_or_create_account(
 def get_or_create_portfolio(
     session: Session,
     account: Account,
-    name: str = DEFAULT_PORTFOLIO_NAME,
+    name: str,
     description: str | None = None,
     portfolio_url: str | None = None,
     portfolio_goals: str | None = None,
@@ -516,13 +696,17 @@ def get_or_create_portfolio(
     goal_timeline: str | None = None,
     is_active: bool = True,
 ) -> Portfolio:
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise ValueError("Portfolio name is required.")
+
     portfolio = session.scalar(
-        select(Portfolio).where(Portfolio.account_id == account.id, Portfolio.name == name)
+        select(Portfolio).where(Portfolio.account_id == account.id, Portfolio.name == clean_name)
     )
     if portfolio is None:
         portfolio = Portfolio(
             account=account,
-            name=name,
+            name=clean_name,
             description=description,
             portfolio_url=portfolio_url,
             portfolio_goals=portfolio_goals,
@@ -593,10 +777,43 @@ def list_brokers_detailed() -> pd.DataFrame:
                 "Broker": broker.name,
                 "Description": broker.description or "",
                 "Active": "Yes" if broker.is_active else "No",
+                "Trade Fee (Fixed)": _format_decimal(broker.trade_fee_fixed),
+                "Trade Fee (%)": _format_decimal(broker.trade_fee_percent),
+                "FX Fee (%)": _format_decimal(broker.fx_fee_percent),
+                "Spread Fee (%)": _format_decimal(broker.spread_fee_percent),
+                "Custody Fee Annual (%)": _format_decimal(broker.custody_fee_percent_annual),
+                "Platform Fee Monthly (Fixed)": _format_decimal(broker.platform_fee_fixed_monthly),
+                "Account Fee Monthly (Fixed)": _format_decimal(broker.account_fee_fixed_monthly),
+                "Inactivity Fee Monthly (Fixed)": _format_decimal(broker.inactivity_fee_fixed_monthly),
+                "Withdrawal Fee (Fixed)": _format_decimal(broker.withdrawal_fee_fixed),
+                "Deposit Fee (Fixed)": _format_decimal(broker.deposit_fee_fixed),
+                "Stamp Duty (%)": _format_decimal(broker.stamp_duty_percent),
+                "Regulatory Fee (%)": _format_decimal(broker.regulatory_fee_percent),
+                "Margin Interest Annual (%)": _format_decimal(broker.margin_interest_percent_annual),
+                "Short Borrow Fee Annual (%)": _format_decimal(broker.short_borrow_fee_percent_annual),
             }
             for broker in rows
         ],
-        columns=["ID", "Broker", "Description", "Active"],
+        columns=[
+            "ID",
+            "Broker",
+            "Description",
+            "Active",
+            "Trade Fee (Fixed)",
+            "Trade Fee (%)",
+            "FX Fee (%)",
+            "Spread Fee (%)",
+            "Custody Fee Annual (%)",
+            "Platform Fee Monthly (Fixed)",
+            "Account Fee Monthly (Fixed)",
+            "Inactivity Fee Monthly (Fixed)",
+            "Withdrawal Fee (Fixed)",
+            "Deposit Fee (Fixed)",
+            "Stamp Duty (%)",
+            "Regulatory Fee (%)",
+            "Margin Interest Annual (%)",
+            "Short Borrow Fee Annual (%)",
+        ],
     )
 
 
@@ -756,7 +973,12 @@ def parse_choice_id(choice: str | int | None) -> int | None:
     if isinstance(choice, int):
         return choice
     raw_id = str(choice).split("|", maxsplit=1)[0].strip()
-    return int(raw_id) if raw_id else None
+    if not raw_id:
+        return None
+    try:
+        return int(raw_id)
+    except ValueError:
+        return None
 
 
 def _account_label(

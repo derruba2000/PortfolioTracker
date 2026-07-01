@@ -58,6 +58,29 @@ def migrate_sqlite_schema(engine: object) -> None:
             connection.execute(
                 text("ALTER TABLE brokers ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
             )
+        broker_fee_columns = [
+            "trade_fee_fixed",
+            "trade_fee_percent",
+            "fx_fee_percent",
+            "spread_fee_percent",
+            "custody_fee_percent_annual",
+            "platform_fee_fixed_monthly",
+            "account_fee_fixed_monthly",
+            "inactivity_fee_fixed_monthly",
+            "withdrawal_fee_fixed",
+            "deposit_fee_fixed",
+            "stamp_duty_percent",
+            "regulatory_fee_percent",
+            "margin_interest_percent_annual",
+            "short_borrow_fee_percent_annual",
+        ]
+        for column in broker_fee_columns:
+            if broker_columns and column not in broker_columns:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE brokers ADD COLUMN {column} NUMERIC NOT NULL DEFAULT 0"
+                    )
+                )
 
         account_columns = {
             row[1]
@@ -188,24 +211,35 @@ def migrate_sqlite_schema(engine: object) -> None:
 
         account_rows = connection.execute(text("SELECT id FROM accounts")).fetchall()
         for (account_id,) in account_rows:
-            portfolio_id = connection.execute(
-                text(
-                    "SELECT id FROM portfolios "
-                    "WHERE account_id = :account_id AND name = 'Default Portfolio'"
-                ),
-                {"account_id": account_id},
-            ).scalar_one_or_none()
-            if portfolio_id is None:
-                connection.execute(
+            if "account_id" in transaction_columns:
+                needs_backfill = connection.execute(
                     text(
-                        "INSERT INTO portfolios (account_id, name) "
-                        "VALUES (:account_id, 'Default Portfolio')"
+                        "SELECT 1 FROM transactions "
+                        "WHERE portfolio_id IS NULL AND account_id = :account_id "
+                        "LIMIT 1"
                     ),
                     {"account_id": account_id},
-                )
-                portfolio_id = connection.execute(text("SELECT last_insert_rowid()")).scalar_one()
+                ).scalar_one_or_none()
+                if needs_backfill is None:
+                    continue
 
-            if "account_id" in transaction_columns:
+                portfolio_id = connection.execute(
+                    text(
+                        "SELECT id FROM portfolios "
+                        "WHERE account_id = :account_id AND name = 'Default Portfolio'"
+                    ),
+                    {"account_id": account_id},
+                ).scalar_one_or_none()
+                if portfolio_id is None:
+                    connection.execute(
+                        text(
+                            "INSERT INTO portfolios (account_id, name) "
+                            "VALUES (:account_id, 'Default Portfolio')"
+                        ),
+                        {"account_id": account_id},
+                    )
+                    portfolio_id = connection.execute(text("SELECT last_insert_rowid()")).scalar_one()
+
                 connection.execute(
                     text(
                         "UPDATE transactions SET portfolio_id = :portfolio_id "

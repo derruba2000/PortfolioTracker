@@ -36,6 +36,8 @@ from portfolio_management.services.performance import (
 from portfolio_management.services.analysis_filters import APP_ACCOUNT_MODE_CHOICES
 from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE
 from portfolio_management.tabs.performance import (
+    _default_window,
+    _padded_axis_range,
     _portfolio_value_figure,
 )
 
@@ -341,6 +343,42 @@ def test_portfolio_value_figure_formats_currency_and_drill_down_name() -> None:
     assert figure.layout.yaxis.tickprefix == "EUR "
     assert figure.data[0].name == "Growth"
     assert list(figure.data[0].y) == [1000.0, 1100.0]
+
+
+def test_default_performance_window_uses_last_30_days_when_available() -> None:
+    values = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-01-01", periods=60).astype(str),
+            "Portfolio Value": np.linspace(1000.0, 1200.0, 60),
+        }
+    )
+
+    start_date, end_date = _default_window(values)
+
+    assert start_date is not None
+    assert end_date is not None
+    assert (end_date - start_date).days == 29
+
+
+def test_default_performance_window_uses_first_available_date_if_short_history() -> None:
+    values = pd.DataFrame(
+        {
+            "Date": ["2026-03-01", "2026-03-10", "2026-03-15"],
+            "Portfolio Value": [1000.0, 1020.0, 1010.0],
+        }
+    )
+
+    start_date, end_date = _default_window(values)
+
+    assert start_date == date(2026, 3, 1)
+    assert end_date == date(2026, 3, 15)
+
+
+def test_dynamic_axis_range_adds_five_percent_padding() -> None:
+    lower, upper = _padded_axis_range(pd.Series([100.0, 200.0]))
+
+    assert np.isclose(lower, 95.0)
+    assert np.isclose(upper, 205.0)
 
 
 def test_app_mode_filter_exposes_live_and_test_only() -> None:

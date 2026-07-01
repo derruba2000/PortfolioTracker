@@ -90,8 +90,43 @@ def test_schema_migration_replaces_alert_account_ids_with_names() -> None:
         connection.execute(
             text(
                 """
-                INSERT INTO brokers (id, name, is_active)
-                VALUES (1, 'Broker', 1)
+                INSERT INTO brokers (
+                    id,
+                    name,
+                    is_active,
+                    trade_fee_fixed,
+                    trade_fee_percent,
+                    fx_fee_percent,
+                    spread_fee_percent,
+                    custody_fee_percent_annual,
+                    platform_fee_fixed_monthly,
+                    account_fee_fixed_monthly,
+                    inactivity_fee_fixed_monthly,
+                    withdrawal_fee_fixed,
+                    deposit_fee_fixed,
+                    stamp_duty_percent,
+                    regulatory_fee_percent,
+                    margin_interest_percent_annual,
+                    short_borrow_fee_percent_annual
+                ) VALUES (
+                    1,
+                    'Broker',
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                )
                 """
             )
         )

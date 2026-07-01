@@ -4,6 +4,8 @@ import pandas as pd
 
 from portfolio_management.tabs.portfolios import (
     ALL_MASTER_PORTFOLIOS,
+    _portfolio_view_changed,
+    _valid_portfolio_view_choice,
     portfolio_assets_table_data,
     portfolio_view_choices,
     portfolios_table_data,
@@ -92,3 +94,61 @@ def test_portfolio_assets_table_uses_selected_portfolio(monkeypatch) -> None:
     assert table.loc[0, "Price"] == "12.50"
     assert table.loc[0, "Value"] == "125.00"
     assert table.loc[0, "Portfolio Description"] == "Long-term allocation"
+
+
+def test_stale_simulated_portfolio_view_resets_for_live_mode(monkeypatch) -> None:
+    live_choices = [
+        ALL_MASTER_PORTFOLIOS,
+        "7 | BPI PT / Alice - NUC 4259582 / Aplicações Prazo Fixo",
+    ]
+
+    monkeypatch.setattr(
+        "portfolio_management.tabs.portfolios.portfolio_view_choices_for_mode",
+        lambda account_mode, active_only=True: live_choices,
+    )
+
+    choices, selected = _valid_portfolio_view_choice(
+        "Live Mode",
+        "27 | SIMULATION LAB / GBP Test Environment / The Fortress",
+    )
+
+    assert choices == live_choices
+    assert selected == ALL_MASTER_PORTFOLIOS
+
+
+def test_portfolio_view_changed_normalizes_stale_value(monkeypatch) -> None:
+    live_choices = [
+        ALL_MASTER_PORTFOLIOS,
+        "7 | BPI PT / Alice - NUC 4259582 / Aplicações Prazo Fixo",
+    ]
+    captured: dict[str, str | int | None] = {}
+
+    monkeypatch.setattr(
+        "portfolio_management.tabs.portfolios.portfolio_view_choices_for_mode",
+        lambda account_mode, active_only=True: live_choices,
+    )
+    monkeypatch.setattr(
+        "portfolio_management.tabs.portfolios.portfolios_table_data",
+        lambda account_mode, portfolio_view_choice: captured.setdefault(
+            "table_choice",
+            portfolio_view_choice,
+        ),
+    )
+    monkeypatch.setattr(
+        "portfolio_management.tabs.portfolios.portfolio_assets_table_data",
+        lambda portfolio_view_choice: captured.setdefault(
+            "assets_choice",
+            portfolio_view_choice,
+        ),
+    )
+
+    filter_update, _table, _assets = _portfolio_view_changed(
+        "Live Mode",
+        "27 | SIMULATION LAB / GBP Test Environment / The Fortress",
+    )
+
+    assert filter_update["value"] == ALL_MASTER_PORTFOLIOS
+    assert captured == {
+        "table_choice": ALL_MASTER_PORTFOLIOS,
+        "assets_choice": ALL_MASTER_PORTFOLIOS,
+    }

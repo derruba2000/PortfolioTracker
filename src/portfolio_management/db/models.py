@@ -66,6 +66,52 @@ class Broker(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trade_fee_fixed: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    trade_fee_percent: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    fx_fee_percent: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    spread_fee_percent: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    custody_fee_percent_annual: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    platform_fee_fixed_monthly: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    account_fee_fixed_monthly: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    inactivity_fee_fixed_monthly: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    withdrawal_fee_fixed: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    deposit_fee_fixed: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    stamp_duty_percent: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False, default=Decimal("0"))
+    regulatory_fee_percent: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    margin_interest_percent_annual: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    short_borrow_fee_percent_annual: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("0"),
+    )
 
     accounts: Mapped[list["Account"]] = relationship(back_populates="broker")
 

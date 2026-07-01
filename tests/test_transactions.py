@@ -38,12 +38,16 @@ def session() -> Session:
 
 
 def test_create_buy_transaction_creates_related_records(session: Session) -> None:
+    broker = Broker(name="Interactive Brokers")
+    account = Account(broker=broker, name="ISA", currency_code="GBP")
+    portfolio = Portfolio(account=account, name="Core")
+    session.add(portfolio)
+    session.flush()
+
     transaction = create_transaction(
         session,
         TransactionInput(
-            broker_name="Interactive Brokers",
-            account_name="ISA",
-            account_currency_code="GBP",
+            portfolio_id=portfolio.id,
             date=datetime(2026, 6, 21),
             transaction_type=TransactionType.BUY,
             description="Initial allocation",
@@ -58,8 +62,6 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     )
     session.commit()
 
-    broker = session.scalar(select(Broker).where(Broker.name == "Interactive Brokers"))
-    account = session.scalar(select(Account).where(Account.name == "ISA"))
     security = session.scalar(select(Security).where(Security.ticker == "VWCE"))
 
     assert broker is not None
@@ -67,7 +69,7 @@ def test_create_buy_transaction_creates_related_records(session: Session) -> Non
     assert account.currency_code == "GBP"
     assert account.is_simulated is False
     assert transaction.portfolio.account_id == account.id
-    assert transaction.portfolio.name == "Default Portfolio"
+    assert transaction.portfolio.name == "Core"
     assert transaction.description == "Initial allocation"
     assert security is not None
     assert security.asset_class == AssetClass.EQUITY
@@ -136,9 +138,16 @@ def test_dividend_requires_positive_total_value(session: Session) -> None:
 
 
 def test_split_is_stored_as_ratio_with_zero_cash_flow(session: Session) -> None:
+    broker = Broker(name="Broker")
+    account = Account(broker=broker, name="Taxable", currency_code="USD")
+    portfolio = Portfolio(account=account, name="Core")
+    session.add(portfolio)
+    session.flush()
+
     transaction = create_transaction(
         session,
         TransactionInput(
+            portfolio_id=portfolio.id,
             date=datetime(2026, 6, 21),
             transaction_type=TransactionType.SPLIT,
             ticker="AAPL",
@@ -221,7 +230,9 @@ def test_transfer_cash_creates_withdrawal_and_deposit(monkeypatch) -> None:
         broker = Broker(name="Broker")
         source_account = Account(broker=broker, name="Source", currency_code="USD")
         target_account = Account(broker=broker, name="Target", currency_code="USD")
-        session.add_all([source_account, target_account])
+        source_portfolio = Portfolio(account=source_account, name="Source Core")
+        target_portfolio = Portfolio(account=target_account, name="Target Core")
+        session.add_all([source_account, target_account, source_portfolio, target_portfolio])
         session.commit()
 
     status = transfer_cash(

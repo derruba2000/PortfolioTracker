@@ -27,7 +27,7 @@ from portfolio_management.tabs.dashboard import (
     dashboard_portfolio_scope_changed,
     dashboard_position_account_changed,
     dashboard_position_portfolio_changed,
-    dashboard_positions,
+    dashboard_positions_and_charts,
     dashboard_scope_changed,
     refresh_dashboard,
 )
@@ -215,8 +215,7 @@ def build_app() -> gr.Blocks:
         )
 
         for broker_button in [
-            brokers["create_broker_button"],
-            brokers["update_broker_button"],
+            brokers["save_broker_button"],
             brokers["delete_broker_button"],
             brokers["refresh_brokers_button"],
         ]:
@@ -331,6 +330,8 @@ def build_app() -> gr.Blocks:
             ],
             outputs=[
                 performance["portfolio_filter"],
+                performance["start_date"],
+                performance["end_date"],
                 performance["portfolio_value_plot"],
                 performance["performance_plot"],
                 performance["drawdown_plot"],
@@ -441,6 +442,8 @@ def build_app() -> gr.Blocks:
                 positions_portfolio_filter,
                 positions_asset_class_filter,
                 dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
             ],
         )
         positions_portfolio_filter.change(
@@ -455,10 +458,12 @@ def build_app() -> gr.Blocks:
             outputs=[
                 positions_asset_class_filter,
                 dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
             ],
         )
         positions_asset_class_filter.change(
-            fn=dashboard_positions,
+            fn=dashboard_positions_and_charts,
             inputs=[
                 mode_toggle,
                 reporting_currency,
@@ -467,7 +472,11 @@ def build_app() -> gr.Blocks:
                 positions_portfolio_filter,
                 positions_asset_class_filter,
             ],
-            outputs=[dashboard["positions_table"]],
+            outputs=[
+                dashboard["positions_table"],
+                dashboard["asset_allocation_plot"],
+                dashboard["currency_allocation_plot"],
+            ],
         )
 
         # ── Active-only checkbox: refresh portfolio dropdowns / tables ────

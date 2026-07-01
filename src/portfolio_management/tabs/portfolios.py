@@ -37,6 +37,10 @@ from portfolio_management.tabs._shared import (
 ALL_MASTER_PORTFOLIOS = "All Portfolios"
 
 
+def _selected_or_first(current_value: str | None, choices: list[str]) -> str | None:
+    return current_value if current_value in choices else choices[0] if choices else None
+
+
 def _format_llm_timestamp(llm_updated_at: datetime | None) -> str:
     if llm_updated_at is None:
         return "AI values: not yet computed"
@@ -78,6 +82,7 @@ def create_portfolio_callback(
         )
 
     accounts = account_choices(include_simulated=True, account_mode=account_mode)
+    selected_account = _selected_or_first(account_choice, accounts)
     portfolios = portfolio_choices_for_account(account_choice)
     selected_portfolio = next(
         (choice for choice in portfolios if f"| {portfolio_name}" in choice),
@@ -90,8 +95,8 @@ def create_portfolio_callback(
     )
     return (
         status,
-        gr.update(choices=accounts, value=account_choice),
-        gr.update(choices=accounts, value=account_choice),
+        gr.update(choices=accounts, value=selected_account),
+        gr.update(choices=accounts, value=selected_account),
         gr.update(choices=portfolios, value=selected_portfolio),
         gr.update(choices=choices, value=selected_view),
         portfolios_table_data(account_mode, selected_view),
@@ -244,7 +249,8 @@ def save_portfolio_callback(
         parse_choice_id(selected_choice) or _parse_portfolio_view_id(portfolio_view_choice),
     )
     account_options = account_choices(include_simulated=True, account_mode=account_mode)
-    account_update = gr.update(choices=account_options, value=account_choice)
+    selected_account = _selected_or_first(account_choice, account_options)
+    account_update = gr.update(choices=account_options, value=selected_account)
     account_portfolios = portfolio_choices_for_account(account_choice)
     selected_portfolio = selected_choice if selected_choice in account_portfolios else (
         account_portfolios[0] if account_portfolios else None
@@ -380,6 +386,19 @@ def _portfolio_view_choice_for_id(
     )
 
 
+def _valid_portfolio_view_choice(
+    account_mode: str,
+    portfolio_view_choice: str | int | None,
+    active_only: bool = True,
+) -> tuple[list[str], str]:
+    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
+    selected_view = _portfolio_view_choice_for_id(
+        choices,
+        _parse_portfolio_view_id(portfolio_view_choice),
+    )
+    return choices, selected_view
+
+
 def _portfolio_scope_changed(account_mode: str, active_only: bool = True) -> tuple[Any, ...]:
     choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
     return (
@@ -415,9 +434,11 @@ def _portfolio_view_changed(
     account_mode: str,
     portfolio_view_choice: str | int | None,
 ) -> tuple[Any, ...]:
+    choices, selected_view = _valid_portfolio_view_choice(account_mode, portfolio_view_choice)
     return (
-        portfolios_table_data(account_mode, portfolio_view_choice),
-        portfolio_assets_table_data(portfolio_view_choice),
+        gr.update(choices=choices, value=selected_view),
+        portfolios_table_data(account_mode, selected_view),
+        portfolio_assets_table_data(selected_view),
     )
 
 
@@ -426,10 +447,10 @@ def _refresh_portfolio_view(
     portfolio_view_choice: str | int | None,
     active_only: bool = True,
 ) -> tuple[Any, ...]:
-    choices = portfolio_view_choices_for_mode(account_mode, active_only=active_only)
-    selected_view = _portfolio_view_choice_for_id(
-        choices,
-        _parse_portfolio_view_id(portfolio_view_choice),
+    choices, selected_view = _valid_portfolio_view_choice(
+        account_mode,
+        portfolio_view_choice,
+        active_only=active_only,
     )
     return (
         gr.update(choices=choices, value=selected_view),
@@ -454,6 +475,7 @@ def _get_llm_recommendation(
         rewritten_goals = ""
         recommendation = ""
         profile = ""
+    _, selected_view = _valid_portfolio_view_choice(account_mode, portfolio_view_choice)
     _, _, _, _, _, _, _, _, _, _, llm_updated_at, _ = portfolio_details(portfolio_choice)
     llm_timestamp = _format_llm_timestamp(llm_updated_at)
     return (
@@ -462,7 +484,7 @@ def _get_llm_recommendation(
         recommendation,
         profile,
         llm_timestamp,
-        portfolios_table_data(account_mode, portfolio_view_choice),
+        portfolios_table_data(account_mode, selected_view),
     )
 
 
@@ -618,7 +640,7 @@ def build_portfolios_tab(
                 label="Portfolio",
                 choices=portfolio_view_choices_for_mode(LIVE_MODE, active_only=True),
                 value=ALL_MASTER_PORTFOLIOS,
-                allow_custom_value=False,
+                allow_custom_value=True,
                 filterable=True,
             )
         portfolios_table = gr.Dataframe(
@@ -779,7 +801,7 @@ def build_portfolios_tab(
         portfolio_view_filter.change(
             fn=_portfolio_view_changed,
             inputs=[mode_toggle, portfolio_view_filter],
-            outputs=[portfolios_table, portfolio_assets_table],
+            outputs=[portfolio_view_filter, portfolios_table, portfolio_assets_table],
         )
 
     return {
