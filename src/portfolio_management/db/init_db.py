@@ -16,6 +16,7 @@ from portfolio_management.db.models import (
     PortfolioAlert,
     PriceHistory,
     Portfolio,
+    PortfolioStrategy,
     Security,
     Strategy,
     Transaction,
@@ -49,6 +50,7 @@ def migrate_sqlite_schema(engine: object) -> None:
 
     with engine.begin() as connection:
         _ensure_orders_table(connection)
+        _ensure_portfolio_strategies_table(connection)
 
         broker_columns = {
             row[1]
@@ -445,6 +447,35 @@ def _ensure_orders_table(connection: object) -> None:
     )
 
 
+def _ensure_portfolio_strategies_table(connection: object) -> None:
+    tables = {
+        row[0]
+        for row in connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "portfolio_strategies" in tables:
+        return
+    connection.execute(
+        text(
+            """
+            CREATE TABLE portfolio_strategies (
+                portfolio_id INTEGER NOT NULL,
+                strategy_id INTEGER NOT NULL,
+                allocation_weight DECIMAL(32, 10) NOT NULL,
+                drift_up_percent DECIMAL(32, 10) NOT NULL DEFAULT 5,
+                drift_down_percent DECIMAL(32, 10) NOT NULL DEFAULT 5,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (portfolio_id, strategy_id),
+                FOREIGN KEY(portfolio_id) REFERENCES portfolios (id),
+                FOREIGN KEY(strategy_id) REFERENCES strategies (id)
+            )
+            """
+        )
+    )
+
+
 def _drop_portfolio_target_drift_column(connection: object) -> None:
     connection.execute(text("PRAGMA foreign_keys=OFF"))
     connection.execute(
@@ -665,7 +696,7 @@ def _migrate_alert_account_names(connection: object) -> None:
 
 
 def _migrate_account_strategies_decimal(connection: object) -> None:
-    """Migrate account strategy targets to the current decimal schema."""
+    """Migrate account targets and move legacy drift bands to portfolio targets."""
     columns = _get_columns(connection, "account_strategies")
     if not columns:
         return
@@ -697,41 +728,30 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
             {"timestamp": timestamp},
         )
         columns["updated_at"] = "DATETIME"
-    if "drift_up_percent" not in columns:
-        connection.execute(
-            text(
-                "ALTER TABLE account_strategies "
-                "ADD COLUMN drift_up_percent NUMERIC NOT NULL DEFAULT 5"
-            )
-        )
-        columns["drift_up_percent"] = "NUMERIC"
-    if "drift_down_percent" not in columns:
-        connection.execute(
-            text(
-                "ALTER TABLE account_strategies "
-                "ADD COLUMN drift_down_percent NUMERIC NOT NULL DEFAULT 5"
-            )
-        )
-        columns["drift_down_percent"] = "NUMERIC"
-
     column_type = _get_column_type(connection, "account_strategies", "allocation_weight")
-    if column_type and "DECIMAL" not in column_type:
-        raw_rows = connection.execute(
-            text(
-                """
-                SELECT
-                    account_id,
-                    strategy_id,
-                    allocation_weight,
-                    drift_up_percent,
-                    drift_down_percent,
-                    created_at,
-                    updated_at
-                FROM account_strategies
-                """
-            )
-        ).mappings().all()
+    has_legacy_drift = "drift_up_percent" in columns or "drift_down_percent" in columns
+    drift_up_expr = "drift_up_percent" if "drift_up_percent" in columns else "5"
+    drift_down_expr = "drift_down_percent" if "drift_down_percent" in columns else "5"
+    raw_rows = connection.execute(
+        text(
+            f"""
+            SELECT
+                account_id,
+                strategy_id,
+                allocation_weight,
+                {drift_up_expr} AS drift_up_percent,
+                {drift_down_expr} AS drift_down_percent,
+                created_at,
+                updated_at
+            FROM account_strategies
+            """
+        )
+    ).mappings().all()
 
+    for row in raw_rows:
+        _copy_account_target_to_portfolios(connection, row, timestamp)
+
+    if (column_type and "DECIMAL" not in column_type) or has_legacy_drift:
         connection.execute(text("PRAGMA foreign_keys=OFF"))
         connection.execute(
             text(
@@ -740,12 +760,8 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
                     account_id INTEGER NOT NULL,
                     strategy_id INTEGER NOT NULL,
                     allocation_weight DECIMAL(32, 10) NOT NULL,
-                    drift_up_percent DECIMAL(32, 10) NOT NULL DEFAULT 5,
-                    drift_down_percent DECIMAL(32, 10) NOT NULL DEFAULT 5,
                     created_at DATETIME NOT NULL,
                     updated_at DATETIME NOT NULL,
-                    CONSTRAINT ck_account_strategies_drift_up_positive CHECK (drift_up_percent > 0),
-                    CONSTRAINT ck_account_strategies_drift_down_positive CHECK (drift_down_percent > 0),
                     PRIMARY KEY (account_id, strategy_id),
                     FOREIGN KEY(account_id) REFERENCES accounts (id),
                     FOREIGN KEY(strategy_id) REFERENCES strategies (id)
@@ -761,16 +777,12 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
                         account_id,
                         strategy_id,
                         allocation_weight,
-                        drift_up_percent,
-                        drift_down_percent,
                         created_at,
                         updated_at
                     ) VALUES (
                         :account_id,
                         :strategy_id,
                         :allocation_weight,
-                        :drift_up_percent,
-                        :drift_down_percent,
                         :created_at,
                         :updated_at
                     )
@@ -780,8 +792,6 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
                     "account_id": row["account_id"],
                     "strategy_id": row["strategy_id"],
                     "allocation_weight": str(Decimal(str(row["allocation_weight"]))),
-                    "drift_up_percent": str(Decimal(str(row["drift_up_percent"]))),
-                    "drift_down_percent": str(Decimal(str(row["drift_down_percent"]))),
                     "created_at": row["created_at"] or timestamp,
                     "updated_at": row["updated_at"] or timestamp,
                 },
@@ -789,6 +799,62 @@ def _migrate_account_strategies_decimal(connection: object) -> None:
         connection.execute(text("DROP TABLE account_strategies"))
         connection.execute(text("ALTER TABLE account_strategies_new RENAME TO account_strategies"))
         connection.execute(text("PRAGMA foreign_keys=ON"))
+
+
+def _copy_account_target_to_portfolios(
+    connection: object,
+    row: object,
+    timestamp: object,
+) -> None:
+    portfolio_ids = connection.execute(
+        text("SELECT id FROM portfolios WHERE account_id = :account_id"),
+        {"account_id": row["account_id"]},
+    ).fetchall()
+    for (portfolio_id,) in portfolio_ids:
+        existing = connection.execute(
+            text(
+                """
+                SELECT 1
+                FROM portfolio_strategies
+                WHERE portfolio_id = :portfolio_id AND strategy_id = :strategy_id
+                """
+            ),
+            {"portfolio_id": portfolio_id, "strategy_id": row["strategy_id"]},
+        ).fetchone()
+        if existing:
+            continue
+        connection.execute(
+            text(
+                """
+                INSERT INTO portfolio_strategies (
+                    portfolio_id,
+                    strategy_id,
+                    allocation_weight,
+                    drift_up_percent,
+                    drift_down_percent,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :portfolio_id,
+                    :strategy_id,
+                    :allocation_weight,
+                    :drift_up_percent,
+                    :drift_down_percent,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "portfolio_id": portfolio_id,
+                "strategy_id": row["strategy_id"],
+                "allocation_weight": str(Decimal(str(row["allocation_weight"]))),
+                "drift_up_percent": str(Decimal(str(row["drift_up_percent"]))),
+                "drift_down_percent": str(Decimal(str(row["drift_down_percent"]))),
+                "created_at": row["created_at"] or timestamp,
+                "updated_at": row["updated_at"] or timestamp,
+            },
+        )
 
 
 def _migrate_price_history_decimal(connection: object) -> None:

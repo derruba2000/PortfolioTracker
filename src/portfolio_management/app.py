@@ -356,6 +356,7 @@ def build_app() -> gr.Blocks:
             inputs=[mode_toggle],
             outputs=[
                 rebalance["rebalance_account"],
+                rebalance["rebalance_portfolio"],
                 rebalance["saved_target"],
                 rebalance["target_allocations_table"],
                 rebalance["cash_void_message"],

@@ -7,7 +7,14 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from portfolio_management.db.models import Account, AccountStrategy, AssetClass, Broker, Strategy
+from portfolio_management.db.models import (
+    Account,
+    AssetClass,
+    Broker,
+    Portfolio,
+    PortfolioStrategy,
+    Strategy,
+)
 from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import account_choices, parse_choice_id
 from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE, current_positions
@@ -21,11 +28,8 @@ def create_target_allocation(
     target_weight_percent: str,
     drift_up_percent: str | int | float | Decimal = DEFAULT_TARGET_DRIFT_PERCENT,
     drift_down_percent: str | int | float | Decimal = DEFAULT_TARGET_DRIFT_PERCENT,
+    portfolio_choice: str | int | None = None,
 ) -> str:
-    account_id = parse_choice_id(account_choice)
-    if account_id is None:
-        raise ValueError("Account is required.")
-
     target_weight = Decimal(str(target_weight_percent).strip()) / Decimal("100")
     if target_weight < 0 or target_weight > 1:
         raise ValueError("Target weight must be between 0 and 100.")
@@ -35,18 +39,16 @@ def create_target_allocation(
     asset_class = AssetClass(asset_class).value
     session_factory = get_session_factory()
     with session_factory() as session:
-        account = session.get(Account, account_id)
-        if account is None:
-            raise ValueError(f"Account id {account_id} does not exist.")
+        portfolio = _resolve_portfolio(session, account_choice, portfolio_choice)
         strategy = get_or_create_strategy(session, asset_class)
         timestamp = datetime.now(UTC)
-        account_strategy = session.get(
-            AccountStrategy,
-            {"account_id": account.id, "strategy_id": strategy.id},
+        portfolio_strategy = session.get(
+            PortfolioStrategy,
+            {"portfolio_id": portfolio.id, "strategy_id": strategy.id},
         )
-        if account_strategy is None:
-            account_strategy = AccountStrategy(
-                account=account,
+        if portfolio_strategy is None:
+            portfolio_strategy = PortfolioStrategy(
+                portfolio=portfolio,
                 strategy=strategy,
                 allocation_weight=target_weight,
                 drift_up_percent=drift_up,
@@ -54,16 +56,16 @@ def create_target_allocation(
                 created_at=timestamp,
                 updated_at=timestamp,
             )
-            session.add(account_strategy)
+            session.add(portfolio_strategy)
         else:
-            account_strategy.allocation_weight = target_weight
-            account_strategy.drift_up_percent = drift_up
-            account_strategy.drift_down_percent = drift_down
-            account_strategy.updated_at = timestamp
+            portfolio_strategy.allocation_weight = target_weight
+            portfolio_strategy.drift_up_percent = drift_up
+            portfolio_strategy.drift_down_percent = drift_down
+            portfolio_strategy.updated_at = timestamp
         session.commit()
 
     return (
-        f"Set {asset_class} target to {target_weight_percent}% "
+        f"Set {asset_class} target to {target_weight_percent}% for {portfolio.name} "
         f"(up {drift_up}%, down {drift_down}%)."
     )
 
@@ -71,31 +73,27 @@ def create_target_allocation(
 def delete_target_allocation(
     account_choice: str | int | None,
     asset_class: str | None,
+    portfolio_choice: str | int | None = None,
 ) -> str:
-    account_id = parse_choice_id(account_choice)
-    if account_id is None:
-        raise ValueError("Account is required.")
     if not asset_class:
         raise ValueError("Target asset class is required.")
 
     asset_class = AssetClass(asset_class).value
     session_factory = get_session_factory()
     with session_factory() as session:
-        account = session.get(Account, account_id)
-        if account is None:
-            raise ValueError(f"Account id {account_id} does not exist.")
+        portfolio = _resolve_portfolio(session, account_choice, portfolio_choice)
         strategy = session.scalar(select(Strategy).where(Strategy.name == asset_class))
         if strategy is None:
             raise ValueError(f"No target allocation exists for {asset_class}.")
 
-        account_strategy = session.get(
-            AccountStrategy,
-            {"account_id": account.id, "strategy_id": strategy.id},
+        portfolio_strategy = session.get(
+            PortfolioStrategy,
+            {"portfolio_id": portfolio.id, "strategy_id": strategy.id},
         )
-        if account_strategy is None:
+        if portfolio_strategy is None:
             raise ValueError(f"No target allocation exists for {asset_class}.")
 
-        session.delete(account_strategy)
+        session.delete(portfolio_strategy)
         session.commit()
 
     return f"Deleted {asset_class} target allocation."
@@ -110,17 +108,20 @@ def get_or_create_strategy(session: Session, name: str) -> Strategy:
     return strategy
 
 
-def target_allocations(account_choice: str | int | None) -> pd.DataFrame:
-    account_id = parse_choice_id(account_choice)
-    if account_id is None:
-        return _target_dataframe([])
-
+def target_allocations(
+    account_choice: str | int | None,
+    portfolio_choice: str | int | None = None,
+) -> pd.DataFrame:
     session_factory = get_session_factory()
     with session_factory() as session:
+        try:
+            portfolio = _resolve_portfolio(session, account_choice, portfolio_choice)
+        except ValueError:
+            return _target_dataframe([])
         rows = session.execute(
-            select(AccountStrategy, Strategy)
-            .join(AccountStrategy.strategy)
-            .where(AccountStrategy.account_id == account_id)
+            select(PortfolioStrategy, Strategy)
+            .join(PortfolioStrategy.strategy)
+            .where(PortfolioStrategy.portfolio_id == portfolio.id)
             .order_by(Strategy.name)
         ).all()
 
@@ -128,36 +129,36 @@ def target_allocations(account_choice: str | int | None) -> pd.DataFrame:
         [
             {
                 "Asset Class": strategy.name,
-                "Target %": str(account_strategy.allocation_weight * Decimal("100")),
-                "Drift Up %": str(account_strategy.drift_up_percent),
-                "Drift Down %": str(account_strategy.drift_down_percent),
+                "Target %": str(portfolio_strategy.allocation_weight * Decimal("100")),
+                "Drift Up %": str(portfolio_strategy.drift_up_percent),
+                "Drift Down %": str(portfolio_strategy.drift_down_percent),
             }
-            for account_strategy, strategy in rows
+            for portfolio_strategy, strategy in rows
         ]
     )
 
 
 def rebalance_report(
     account_choice: str | int | None,
+    portfolio_choice: str | int | None = None,
     account_mode: str = LIVE_MODE,
 ) -> pd.DataFrame:
-    account_id = parse_choice_id(account_choice)
-    if account_id is None:
-        return _rebalance_dataframe([])
-
     session_factory = get_session_factory()
     with session_factory() as session:
-        account = session.get(Account, account_id)
-        if account is None:
+        try:
+            portfolio = _resolve_portfolio(session, account_choice, portfolio_choice)
+        except ValueError:
             return _rebalance_dataframe([])
+        account = portfolio.account
         broker_name = account.broker.name
         account_name = account.name
+        portfolio_name = portfolio.name
         account_currency = account.currency_code
         effective_mode = SANDBOX_MODE if account.is_simulated else LIVE_MODE
         target_rows = session.execute(
-            select(AccountStrategy, Strategy)
-            .join(AccountStrategy.strategy)
-            .where(AccountStrategy.account_id == account.id)
+            select(PortfolioStrategy, Strategy)
+            .join(PortfolioStrategy.strategy)
+            .where(PortfolioStrategy.portfolio_id == portfolio.id)
         ).all()
 
     # Rebalancing one account must use that account's own type and currency.
@@ -172,7 +173,9 @@ def rebalance_report(
         actual_by_asset_class: dict[str, Decimal] = {}
     else:
         account_positions = positions[
-            (positions["Broker"] == broker_name) & (positions["Account"] == account_name)
+            (positions["Broker"] == broker_name)
+            & (positions["Account"] == account_name)
+            & (positions["Portfolio"] == portfolio_name)
         ]
         actual_by_asset_class = {
             str(asset_class): sum(_to_decimal(value) for value in rows["Market Value"])
@@ -182,11 +185,11 @@ def rebalance_report(
 
     target_by_asset_class = {
         strategy.name: (
-            account_strategy.allocation_weight,
-            account_strategy.drift_up_percent,
-            account_strategy.drift_down_percent,
+            portfolio_strategy.allocation_weight,
+            portfolio_strategy.drift_up_percent,
+            portfolio_strategy.drift_down_percent,
         )
-        for account_strategy, strategy in target_rows
+        for portfolio_strategy, strategy in target_rows
     }
     asset_classes = sorted(set(actual_by_asset_class) | set(target_by_asset_class))
 
@@ -234,6 +237,25 @@ def default_rebalance_account_choice() -> str | None:
     return choices[0] if choices else None
 
 
+def portfolio_choices_for_account(account_choice: str | int | None) -> list[str]:
+    account_id = parse_choice_id(account_choice)
+    if account_id is None:
+        return []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = session.scalars(
+            select(Portfolio)
+            .where(Portfolio.account_id == account_id, Portfolio.is_active.is_(True))
+            .order_by(Portfolio.name, Portfolio.id)
+        ).all()
+    return [f"{portfolio.id} | {portfolio.name}" for portfolio in rows]
+
+
+def default_rebalance_portfolio_choice(account_choice: str | int | None) -> str | None:
+    choices = portfolio_choices_for_account(account_choice)
+    return choices[0] if choices else None
+
+
 def _target_dataframe(records: list[dict[str, str]]) -> pd.DataFrame:
     return pd.DataFrame(
         records,
@@ -258,8 +280,11 @@ def _rebalance_dataframe(records: list[dict[str, str]]) -> pd.DataFrame:
     )
 
 
-def target_allocations_cash_void_message(account_choice: str | int | None) -> str:
-    targets = target_allocations(account_choice)
+def target_allocations_cash_void_message(
+    account_choice: str | int | None,
+    portfolio_choice: str | int | None = None,
+) -> str:
+    targets = target_allocations(account_choice, portfolio_choice)
     if targets.empty:
         return "Cash void: no target allocations are configured."
 
@@ -300,3 +325,35 @@ def _format_percent(value: Decimal) -> str:
     if normalized == normalized.to_integral():
         return str(normalized.quantize(Decimal("1")))
     return format(normalized, "f").rstrip("0").rstrip(".")
+
+
+def _resolve_portfolio(
+    session: Session,
+    account_choice: str | int | None,
+    portfolio_choice: str | int | None,
+) -> Portfolio:
+    account_id = parse_choice_id(account_choice)
+    if account_id is None:
+        raise ValueError("Account is required.")
+
+    account = session.get(Account, account_id)
+    if account is None:
+        raise ValueError(f"Account id {account_id} does not exist.")
+
+    portfolio_id = parse_choice_id(portfolio_choice)
+    if portfolio_id is not None:
+        portfolio = session.get(Portfolio, portfolio_id)
+        if portfolio is None:
+            raise ValueError(f"Portfolio id {portfolio_id} does not exist.")
+        if portfolio.account_id != account.id:
+            raise ValueError("Portfolio does not belong to the selected account.")
+        return portfolio
+
+    portfolio = session.scalar(
+        select(Portfolio)
+        .where(Portfolio.account_id == account.id, Portfolio.is_active.is_(True))
+        .order_by(Portfolio.name, Portfolio.id)
+    )
+    if portfolio is None:
+        raise ValueError("Selected account has no active portfolios.")
+    return portfolio

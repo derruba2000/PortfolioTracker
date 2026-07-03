@@ -10,12 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from portfolio_management.db.base import Base
 from portfolio_management.db.models import (
     Account,
-    AccountStrategy,
     AssetClass,
     Benchmark,
     Broker,
     FxRateHistory,
     Portfolio,
+    PortfolioStrategy,
     PriceHistory,
     Security,
     Transaction,
@@ -160,6 +160,7 @@ def test_rebalance_target_drifts_must_be_positive(monkeypatch) -> None:
     with Session(engine) as session:
         broker = Broker(name="Broker")
         account = Account(broker=broker, name="ISA", currency_code="USD")
+        Portfolio(account=account, name="Core")
         session.add(account)
         session.commit()
         account_choice = f"{account.id} | Broker / ISA"
@@ -186,6 +187,7 @@ def test_target_allocation_timestamps_insert_and_update(monkeypatch) -> None:
     with Session(engine) as session:
         broker = Broker(name="Broker")
         account = Account(broker=broker, name="ISA", currency_code="USD")
+        Portfolio(account=account, name="Core")
         session.add(account)
         session.commit()
         account_choice = f"{account.id} | Broker / ISA"
@@ -195,23 +197,23 @@ def test_target_allocation_timestamps_insert_and_update(monkeypatch) -> None:
     create_target_allocation(account_choice, "EQUITY", "60")
 
     with Session(engine) as session:
-        account_strategy = session.scalar(select(AccountStrategy))
-        assert account_strategy is not None
-        assert account_strategy.created_at is not None
-        assert account_strategy.updated_at is not None
-        original_created_at = account_strategy.created_at
+        portfolio_strategy = session.scalar(select(PortfolioStrategy))
+        assert portfolio_strategy is not None
+        assert portfolio_strategy.created_at is not None
+        assert portfolio_strategy.updated_at is not None
+        original_created_at = portfolio_strategy.created_at
         old_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
-        account_strategy.updated_at = old_updated_at
+        portfolio_strategy.updated_at = old_updated_at
         session.commit()
 
     create_target_allocation(account_choice, "EQUITY", "70")
 
     with Session(engine) as session:
-        account_strategy = session.scalar(select(AccountStrategy))
-        assert account_strategy is not None
-        assert account_strategy.allocation_weight == Decimal("0.7000000000")
-        assert account_strategy.created_at == original_created_at
-        assert account_strategy.updated_at != old_updated_at
+        portfolio_strategy = session.scalar(select(PortfolioStrategy))
+        assert portfolio_strategy is not None
+        assert portfolio_strategy.allocation_weight == Decimal("0.7000000000")
+        assert portfolio_strategy.created_at == original_created_at
+        assert portfolio_strategy.updated_at != old_updated_at
 
 
 def test_delete_target_allocation_removes_existing_target(monkeypatch) -> None:
@@ -221,6 +223,7 @@ def test_delete_target_allocation_removes_existing_target(monkeypatch) -> None:
     with Session(engine) as session:
         broker = Broker(name="Broker")
         account = Account(broker=broker, name="ISA", currency_code="USD")
+        Portfolio(account=account, name="Core")
         session.add(account)
         session.commit()
         account_choice = f"{account.id} | Broker / ISA"
@@ -231,7 +234,7 @@ def test_delete_target_allocation_removes_existing_target(monkeypatch) -> None:
     delete_target_allocation(account_choice, "EQUITY")
 
     with Session(engine) as session:
-        assert session.scalar(select(AccountStrategy)) is None
+        assert session.scalar(select(PortfolioStrategy)) is None
 
     targets = target_allocations(account_choice)
     assert targets.empty

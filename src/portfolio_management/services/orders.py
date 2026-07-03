@@ -237,6 +237,8 @@ def mark_order_completed(
                 ),
             )
         else:
+            if price == 0 and order.target_cash_amount is not None:
+                price = Decimal(str(order.target_cash_amount))
             account_price = price * fx_rate
             account_fees = fees * fx_rate
             create_transaction(

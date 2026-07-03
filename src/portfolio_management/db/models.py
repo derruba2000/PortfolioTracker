@@ -6,7 +6,6 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -176,6 +175,10 @@ class Portfolio(Base):
     account: Mapped[Account] = relationship(back_populates="portfolios")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="portfolio")
     orders: Mapped[list["Order"]] = relationship(back_populates="portfolio")
+    portfolio_strategies: Mapped[list["PortfolioStrategy"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("account_id", "name", name="uq_portfolios_account_name"),
@@ -193,12 +196,40 @@ class Strategy(Base):
         back_populates="strategy",
         cascade="all, delete-orphan",
     )
+    portfolio_strategies: Mapped[list["PortfolioStrategy"]] = relationship(
+        back_populates="strategy",
+        cascade="all, delete-orphan",
+    )
 
 
 class AccountStrategy(Base):
     __tablename__ = "account_strategies"
 
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
+    allocation_weight: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    account: Mapped[Account] = relationship(back_populates="account_strategies")
+    strategy: Mapped[Strategy] = relationship(back_populates="account_strategies")
+
+
+class PortfolioStrategy(Base):
+    __tablename__ = "portfolio_strategies"
+
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"), primary_key=True)
     strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
     allocation_weight: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
     drift_up_percent: Mapped[Decimal] = mapped_column(
@@ -227,13 +258,8 @@ class AccountStrategy(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
 
-    account: Mapped[Account] = relationship(back_populates="account_strategies")
-    strategy: Mapped[Strategy] = relationship(back_populates="account_strategies")
-
-    __table_args__ = (
-        CheckConstraint("drift_up_percent > 0", name="ck_account_strategies_drift_up_positive"),
-        CheckConstraint("drift_down_percent > 0", name="ck_account_strategies_drift_down_positive"),
-    )
+    portfolio: Mapped[Portfolio] = relationship(back_populates="portfolio_strategies")
+    strategy: Mapped[Strategy] = relationship(back_populates="portfolio_strategies")
 
 
 class Security(Base):

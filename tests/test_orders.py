@@ -691,6 +691,45 @@ def test_mark_completed_deposit_converts_order_currency_to_account_currency(monk
     assert leg.total_value == Decimal("86.0000000000")
 
 
+def test_mark_completed_cash_order_uses_target_amount_when_execution_price_is_zero(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.orders.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Live", currency_code="GBP", is_simulated=False)
+        portfolio = Portfolio(account=account, name="Core")
+        order = Order(
+            portfolio=portfolio,
+            order_type=OrderType.DEPOSIT,
+            status=OrderStatus.PENDING,
+            target_cash_amount=Decimal("45500"),
+            currency_code="GBP",
+            created_at=datetime(2026, 7, 3, 9, 50, 0),
+        )
+        session.add_all([broker, account, portfolio, order])
+        session.commit()
+        order_id = order.id
+
+    _ = mark_order_completed(
+        order_choice=f"{order_id} | DEPOSIT CASH",
+        actual_quantity="1",
+        actual_price="0",
+        actual_fees="0",
+    )
+
+    with Session(engine) as session:
+        transaction = session.query(Transaction).filter(Transaction.order_id == order_id).one()
+
+    assert transaction.price == Decimal("45500.0000000000")
+    assert transaction.total_value == Decimal("45500.0000000000")
+
+
 def test_mark_order_completed_rejects_non_pending(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

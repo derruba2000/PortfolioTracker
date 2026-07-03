@@ -19,6 +19,7 @@ from portfolio_management.db.models import (
     OrderStatus,
     OrderType,
     Portfolio,
+    PortfolioStrategy,
     Security,
     Strategy,
     Transaction,
@@ -69,13 +70,22 @@ def test_sqlite_decimal_round_trips_exactly() -> None:
         assert account_strategy.allocation_weight == Decimal(
             "0.3333333333"
         )
-        assert account_strategy.drift_up_percent == Decimal("5.0000000000")
-        assert account_strategy.drift_down_percent == Decimal("5.0000000000")
 
 
-def test_account_strategy_drift_columns_are_migrated() -> None:
+def test_account_strategy_drift_columns_move_to_portfolio_strategies() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        strategy = Strategy(name="EQUITY")
+        session.add_all([broker, account, portfolio, strategy])
+        session.commit()
+        account_id = account.id
+        strategy_id = strategy.id
+        portfolio_id = portfolio.id
+
     with engine.begin() as connection:
         connection.execute(text("DROP TABLE account_strategies"))
         connection.execute(
@@ -97,9 +107,10 @@ def test_account_strategy_drift_columns_are_migrated() -> None:
                     account_id,
                     strategy_id,
                     allocation_weight
-                ) VALUES (1, 1, '0.6')
+                ) VALUES (:account_id, :strategy_id, '0.6')
                 """
-            )
+            ),
+            {"account_id": account_id, "strategy_id": strategy_id},
         )
 
     migrate_sqlite_schema(engine)
@@ -109,19 +120,31 @@ def test_account_strategy_drift_columns_are_migrated() -> None:
             row[1]
             for row in connection.execute(text("PRAGMA table_info(account_strategies)"))
         }
-        row = connection.execute(
+        account_row = connection.execute(
             text(
                 """
-                SELECT allocation_weight, drift_up_percent, drift_down_percent
+                SELECT allocation_weight
                 FROM account_strategies
                 """
             )
         ).one()
+        portfolio_row = connection.execute(
+            text(
+                """
+                SELECT allocation_weight, drift_up_percent, drift_down_percent
+                FROM portfolio_strategies
+                WHERE portfolio_id = :portfolio_id AND strategy_id = :strategy_id
+                """
+            ),
+            {"portfolio_id": portfolio_id, "strategy_id": strategy_id},
+        ).one()
 
-    assert {"drift_up_percent", "drift_down_percent"}.issubset(columns)
-    assert Decimal(str(row[0])) == Decimal("0.6")
-    assert Decimal(str(row[1])) == Decimal("5")
-    assert Decimal(str(row[2])) == Decimal("5")
+    assert "drift_up_percent" not in columns
+    assert "drift_down_percent" not in columns
+    assert Decimal(str(account_row[0])) == Decimal("0.6")
+    assert Decimal(str(portfolio_row[0])) == Decimal("0.6")
+    assert Decimal(str(portfolio_row[1])) == Decimal("5")
+    assert Decimal(str(portfolio_row[2])) == Decimal("5")
 
 
 def test_portfolio_target_drift_column_is_dropped_on_migration() -> None:
