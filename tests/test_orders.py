@@ -13,6 +13,7 @@ from portfolio_management.db.models import (
     Account,
     AssetClass,
     Broker,
+    FxRateHistory,
     Order,
     OrderStatus,
     OrderType,
@@ -24,10 +25,12 @@ from portfolio_management.db.models import (
 )
 from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE
 from portfolio_management.services.orders import (
+    buy_order_price_defaults,
     cancel_order,
     create_order,
     list_orders,
     mark_order_completed,
+    order_execution_defaults,
 )
 from portfolio_management.tabs.orders import orders_table
 
@@ -86,6 +89,7 @@ def test_orders_table_has_required_columns_and_rich_cells(monkeypatch) -> None:
         "Asset/Ticker",
         "Quantity",
         "Price",
+        "Currency",
         "Status",
         "Market vs Target",
     ]
@@ -187,6 +191,7 @@ def test_create_buy_order_defaults_to_pending(monkeypatch) -> None:
     assert order.target_quantity == Decimal("1.5")
     assert order.target_price == Decimal("400")
     assert order.target_cash_amount is None
+    assert order.currency_code == "USD"
     assert "PENDING" in status
 
 
@@ -214,6 +219,7 @@ def test_create_withdraw_order_uses_cash_amount_and_no_security(monkeypatch) -> 
         target_quantity="",
         target_price="",
         target_cash_amount="250",
+        currency_code="EUR",
     )
 
     with Session(engine) as session:
@@ -227,7 +233,81 @@ def test_create_withdraw_order_uses_cash_amount_and_no_security(monkeypatch) -> 
     assert order.target_quantity is None
     assert order.target_price is None
     assert order.target_cash_amount == Decimal("250")
+    assert order.currency_code == "EUR"
     assert "PENDING" in status
+
+
+def test_buy_order_price_defaults_use_latest_price_plus_five_percent(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.orders.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        security = Security(
+            ticker="AAPL",
+            name="Apple",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add(security)
+        session.flush()
+        session.add_all(
+            [
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 7, 1),
+                    symbol="AAPL",
+                    close=Decimal("100"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 7, 2),
+                    symbol="AAPL",
+                    close=Decimal("120"),
+                ),
+            ]
+        )
+        session.commit()
+
+    price, target_price, trend = buy_order_price_defaults("AAPL")
+
+    assert price == "120.0000"
+    assert target_price == "126.0000"
+    assert trend == "up"
+
+
+def test_order_execution_defaults_prefill_cash_order_amount(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.orders.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Live", currency_code="GBP", is_simulated=False)
+        portfolio = Portfolio(account=account, name="Core")
+        order = Order(
+            portfolio=portfolio,
+            order_type=OrderType.DEPOSIT,
+            status=OrderStatus.PENDING,
+            target_cash_amount=Decimal("750"),
+        )
+        session.add_all([broker, account, portfolio, order])
+        session.commit()
+        order_id = order.id
+
+    quantity, price, fees = order_execution_defaults(f"{order_id} | DEPOSIT CASH")
+
+    assert quantity == "1"
+    assert price == "750.0000000000"
+    assert fees == "0"
 
 
 def test_list_orders_filters_by_status_portfolio_and_date_range(monkeypatch) -> None:
@@ -552,6 +632,63 @@ def test_mark_completed_withdraw_generates_single_cash_transaction(monkeypatch) 
     assert leg.security_id is None
     assert leg.type == TransactionType.WITHDRAWAL
     assert leg.total_value == Decimal("-300")
+
+
+def test_mark_completed_deposit_converts_order_currency_to_account_currency(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.orders.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="Live", currency_code="GBP", is_simulated=False)
+        portfolio = Portfolio(account=account, name="Core")
+        order = Order(
+            portfolio=portfolio,
+            order_type=OrderType.DEPOSIT,
+            status=OrderStatus.PENDING,
+            target_cash_amount=Decimal("100"),
+            currency_code="EUR",
+            created_at=datetime(2026, 7, 1, 10, 0, 0),
+        )
+        session.add_all(
+            [
+                broker,
+                account,
+                portfolio,
+                order,
+                FxRateHistory(
+                    base_currency_code="EUR",
+                    quote_currency_code="GBP",
+                    date=date(2026, 7, 2),
+                    symbol="EURGBP=X",
+                    close=Decimal("0.86"),
+                ),
+            ]
+        )
+        session.commit()
+        order_id = order.id
+
+    _ = mark_order_completed(
+        order_choice=f"{order_id} | DEPOSIT CASH",
+        actual_quantity="1",
+        actual_price="100",
+        actual_fees="0",
+    )
+
+    with Session(engine) as session:
+        transactions = session.query(Transaction).filter(Transaction.order_id == order_id).all()
+
+    assert len(transactions) == 1
+    leg = transactions[0]
+    assert leg.security_id is None
+    assert leg.type == TransactionType.DEPOSIT
+    assert leg.price == Decimal("86.0000000000")
+    assert leg.total_value == Decimal("86.0000000000")
 
 
 def test_mark_order_completed_rejects_non_pending(monkeypatch) -> None:

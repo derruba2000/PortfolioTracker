@@ -12,6 +12,7 @@ from portfolio_management.services.rebalancing import (
     delete_target_allocation,
     rebalance_report,
     target_allocations,
+    target_allocations_cash_void_message,
 )
 from portfolio_management.services.reference_data import list_asset_class_codes
 from portfolio_management.tabs._shared import format_two_decimals
@@ -19,7 +20,15 @@ from portfolio_management.tabs._shared import format_two_decimals
 
 def rebalance_positions(account_choice: str, account_mode: str) -> object:
     rebalance = rebalance_report(account_choice, account_mode=account_mode).copy()
-    for column in ["Current Value", "Actual %", "Target %", "Drift %", "Trade Value"]:
+    for column in [
+        "Current Value",
+        "Actual %",
+        "Target %",
+        "Drift %",
+        "Drift Up %",
+        "Drift Down %",
+        "Trade Value",
+    ]:
         if column in rebalance.columns:
             rebalance[column] = rebalance[column].map(format_two_decimals)
     return rebalance
@@ -27,8 +36,9 @@ def rebalance_positions(account_choice: str, account_mode: str) -> object:
 
 def _formatted_target_allocations(account_choice: str) -> object:
     df = target_allocations(account_choice).copy()
-    if "Target %" in df.columns:
-        df["Target %"] = df["Target %"].map(format_two_decimals)
+    for column in ["Target %", "Drift Up %", "Drift Down %"]:
+        if column in df.columns:
+            df[column] = df[column].map(format_two_decimals)
     return df
 
 
@@ -56,6 +66,7 @@ def _rebalance_mode_changed(account_mode: str) -> tuple[Any, ...]:
         gr.update(choices=accounts, value=selected_account),
         _saved_target_update(selected_account),
         _formatted_target_allocations(selected_account),
+        target_allocations_cash_void_message(selected_account),
         rebalance_positions(selected_account, account_mode=account_mode),
     )
 
@@ -64,6 +75,8 @@ def _set_target_allocation(
     account_choice: str,
     asset_class: str,
     target_weight_percent: str,
+    drift_up_percent: str,
+    drift_down_percent: str,
     account_mode: str,
 ) -> tuple[Any, ...]:
     try:
@@ -71,12 +84,15 @@ def _set_target_allocation(
             account_choice=account_choice,
             asset_class=asset_class,
             target_weight_percent=target_weight_percent,
+            drift_up_percent=drift_up_percent,
+            drift_down_percent=drift_down_percent,
         )
     except Exception as exc:
         status = f"Could not set target allocation: {exc}"
     return (
         status,
         _formatted_target_allocations(account_choice),
+        target_allocations_cash_void_message(account_choice),
         rebalance_positions(account_choice, account_mode=account_mode),
         _saved_target_update(account_choice, asset_class),
     )
@@ -94,6 +110,7 @@ def _delete_target_allocation(
     return (
         status,
         _formatted_target_allocations(account_choice),
+        target_allocations_cash_void_message(account_choice),
         rebalance_positions(account_choice, account_mode=account_mode),
         _saved_target_update(account_choice),
     )
@@ -101,25 +118,28 @@ def _delete_target_allocation(
 
 def _load_saved_target(account_choice: str, asset_class: str | None) -> tuple[Any, ...]:
     if not asset_class:
-        return gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update()
 
     df = target_allocations(account_choice)
     if df.empty:
-        return gr.update(value=asset_class), gr.update()
+        return gr.update(value=asset_class), gr.update(), gr.update(), gr.update()
 
     row = df[df["Asset Class"] == asset_class]
     if row.empty:
-        return gr.update(value=asset_class), gr.update()
+        return gr.update(value=asset_class), gr.update(), gr.update(), gr.update()
 
     return (
         gr.update(value=asset_class),
         gr.update(value=format_two_decimals(row.iloc[0]["Target %"])),
+        gr.update(value=format_two_decimals(row.iloc[0]["Drift Up %"])),
+        gr.update(value=format_two_decimals(row.iloc[0]["Drift Down %"])),
     )
 
 
 def _refresh_rebalance(account_choice: str, account_mode: str) -> tuple[Any, ...]:
     return (
         _formatted_target_allocations(account_choice),
+        target_allocations_cash_void_message(account_choice),
         rebalance_positions(account_choice, account_mode=account_mode),
         _saved_target_update(account_choice),
     )
@@ -150,23 +170,37 @@ def build_rebalance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
                 value="EQUITY",
             )
             target_weight_percent = gr.Textbox(label="Target %", value="60")
+            drift_up_percent = gr.Textbox(label="Drift Up %", value="5")
+            drift_down_percent = gr.Textbox(label="Drift Down %", value="5")
         with gr.Row():
             set_target_button = gr.Button("Set Target Allocation", variant="primary")
             delete_target_button = gr.Button("Delete Target Allocation")
+        cash_void_message = gr.Textbox(
+            label="Cash Void",
+            value=target_allocations_cash_void_message(selected_rebalance_account),
+            interactive=False,
+        )
         target_allocations_table = gr.Dataframe(
             value=lambda: _formatted_target_allocations(selected_rebalance_account),
-            headers=["Asset Class", "Target %"],
-            datatype=["str", "str"],
+            headers=["Asset Class", "Target %", "Drift Up %", "Drift Down %"],
+            datatype=["str", "str", "str", "str"],
             label="Target Allocations",
             interactive=False,
         )
         rebalance_table = gr.Dataframe(
             value=lambda: rebalance_positions(selected_rebalance_account, account_mode=LIVE_MODE),
             headers=[
-                "Asset Class", "Current Value", "Actual %",
-                "Target %", "Drift %", "Action", "Trade Value",
+                "Asset Class",
+                "Current Value",
+                "Actual %",
+                "Target %",
+                "Drift %",
+                "Drift Up %",
+                "Drift Down %",
+                "Action",
+                "Trade Value",
             ],
-            datatype=["str", "str", "str", "str", "str", "str", "str"],
+            datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
             label="Rebalance Suggestions",
             interactive=False,
         )
@@ -174,33 +208,68 @@ def build_rebalance_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
 
         set_target_button.click(
             fn=_set_target_allocation,
-            inputs=[rebalance_account, rebalance_asset_class, target_weight_percent, mode_toggle],
-            outputs=[rebalance_status, target_allocations_table, rebalance_table, saved_target],
+            inputs=[
+                rebalance_account,
+                rebalance_asset_class,
+                target_weight_percent,
+                drift_up_percent,
+                drift_down_percent,
+                mode_toggle,
+            ],
+            outputs=[
+                rebalance_status,
+                target_allocations_table,
+                cash_void_message,
+                rebalance_table,
+                saved_target,
+            ],
         )
         delete_target_button.click(
             fn=_delete_target_allocation,
             inputs=[rebalance_account, saved_target, mode_toggle],
-            outputs=[rebalance_status, target_allocations_table, rebalance_table, saved_target],
+            outputs=[
+                rebalance_status,
+                target_allocations_table,
+                cash_void_message,
+                rebalance_table,
+                saved_target,
+            ],
         )
         saved_target.change(
             fn=_load_saved_target,
             inputs=[rebalance_account, saved_target],
-            outputs=[rebalance_asset_class, target_weight_percent],
+            outputs=[
+                rebalance_asset_class,
+                target_weight_percent,
+                drift_up_percent,
+                drift_down_percent,
+            ],
         )
         refresh_rebalance_button.click(
             fn=_refresh_rebalance,
             inputs=[rebalance_account, mode_toggle],
-            outputs=[target_allocations_table, rebalance_table, saved_target],
+            outputs=[
+                target_allocations_table,
+                cash_void_message,
+                rebalance_table,
+                saved_target,
+            ],
         )
         rebalance_account.change(
             fn=_refresh_rebalance,
             inputs=[rebalance_account, mode_toggle],
-            outputs=[target_allocations_table, rebalance_table, saved_target],
+            outputs=[
+                target_allocations_table,
+                cash_void_message,
+                rebalance_table,
+                saved_target,
+            ],
         )
 
     return {
         "rebalance_account": rebalance_account,
         "saved_target": saved_target,
         "target_allocations_table": target_allocations_table,
+        "cash_void_message": cash_void_message,
         "rebalance_table": rebalance_table,
     }

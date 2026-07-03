@@ -13,6 +13,7 @@ from sqlalchemy import select
 from portfolio_management.db.models import (
     Account,
     Broker,
+    FxRateHistory,
     Order,
     OrderStatus,
     OrderType,
@@ -24,6 +25,7 @@ from portfolio_management.db.models import (
 )
 from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import parse_choice_id
+from portfolio_management.services.reference_data import ensure_currency_code
 from portfolio_management.services.transactions import TransactionInput, create_transaction
 
 
@@ -34,6 +36,7 @@ def create_order(
     target_quantity: str | Decimal | None,
     target_price: str | Decimal | None,
     target_cash_amount: str | Decimal | None,
+    currency_code: str | None = None,
 ) -> str:
     portfolio_id = parse_choice_id(portfolio_choice)
     if portfolio_id is None:
@@ -53,6 +56,10 @@ def create_order(
         portfolio = session.get(Portfolio, portfolio_id)
         if portfolio is None:
             raise ValueError(f"Portfolio id {portfolio_id} does not exist.")
+        selected_currency = ensure_currency_code(
+            session,
+            currency_code or portfolio.account.currency_code,
+        )
 
         order_security: Security | None = None
         parsed_target_quantity: Decimal | None = None
@@ -84,6 +91,7 @@ def create_order(
             target_quantity=parsed_target_quantity,
             target_price=parsed_target_price,
             target_cash_amount=parsed_target_cash_amount,
+            currency_code=selected_currency,
         )
 
         session.add(order)
@@ -202,34 +210,45 @@ def mark_order_completed(
         transaction_type = _transaction_type_from_order_type(order.order_type)
         ticker = order.security.ticker if order.security is not None else None
         description = f"Executed from order #{order.id}"
+        execution_date = datetime.now()
+        account_currency = order.portfolio.account.currency_code
+        order_currency = (order.currency_code or account_currency).upper()
+        fx_rate = _fx_rate_to_account_currency(
+            session=session,
+            source_currency=order_currency,
+            account_currency=account_currency,
+            as_of_date=execution_date.date(),
+        )
 
         if order.order_type in {OrderType.BUY, OrderType.SELL}:
             create_transaction(
                 session,
                 TransactionInput(
                     portfolio_id=order.portfolio_id,
-                    date=datetime.now(),
+                    date=execution_date,
                     transaction_type=transaction_type,
                     ticker=ticker,
                     quantity=quantity,
                     price=price,
                     fees=fees,
-                    currency_exchange_rate=Decimal("1"),
+                    currency_exchange_rate=fx_rate,
                     description=description,
                     order_id=order.id,
                 ),
             )
         else:
+            account_price = price * fx_rate
+            account_fees = fees * fx_rate
             create_transaction(
                 session,
                 TransactionInput(
                     portfolio_id=order.portfolio_id,
-                    date=datetime.now(),
+                    date=execution_date,
                     transaction_type=transaction_type,
                     ticker=None,
                     quantity=quantity,
-                    price=price,
-                    fees=fees,
+                    price=account_price,
+                    fees=account_fees,
                     currency_exchange_rate=Decimal("1"),
                     description=description,
                     order_id=order.id,
@@ -244,6 +263,116 @@ def mark_order_completed(
         f"Marked order #{order_id} as EXECUTED "
         f"(qty={quantity}, price={price}, fees={fees})."
     )
+
+
+def portfolio_account_currency(portfolio_choice: str | int | None) -> str:
+    portfolio_id = parse_choice_id(portfolio_choice)
+    if portfolio_id is None:
+        return ""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio = session.get(Portfolio, portfolio_id)
+        if portfolio is None:
+            return ""
+        return portfolio.account.currency_code
+
+
+def order_execution_defaults(order_choice: str | int | None) -> tuple[str, str, str]:
+    order_id = parse_choice_id(order_choice)
+    if order_id is None:
+        return "1", "0", "0"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            return "1", "0", "0"
+        if order.order_type in {OrderType.DEPOSIT, OrderType.WITHDRAW}:
+            return "1", _decimal_or_empty(order.target_cash_amount), "0"
+        return (
+            _decimal_or_empty(order.target_quantity) or "1",
+            _decimal_or_empty(order.target_price) or "0",
+            "0",
+        )
+
+
+def buy_order_price_defaults(security_ticker: str | None) -> tuple[str, str, str]:
+    clean_ticker = (security_ticker or "").strip().upper()
+    if not clean_ticker:
+        return "", "", "none"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        security = session.scalar(select(Security).where(Security.ticker == clean_ticker))
+        if security is None:
+            return "", "", "none"
+        prices = session.scalars(
+            select(PriceHistory)
+            .where(PriceHistory.security_id == security.id)
+            .order_by(PriceHistory.date.desc())
+            .limit(2)
+        ).all()
+
+    if not prices:
+        return "", "", "none"
+
+    latest = Decimal(str(prices[0].close))
+    target = latest * Decimal("1.05")
+    if len(prices) < 2:
+        trend = "flat"
+    elif latest > Decimal(str(prices[1].close)):
+        trend = "up"
+    elif latest < Decimal(str(prices[1].close)):
+        trend = "down"
+    else:
+        trend = "flat"
+    return f"{latest:,.4f}", f"{target:.4f}", trend
+
+
+def _fx_rate_to_account_currency(
+    session: object,
+    source_currency: str,
+    account_currency: str,
+    as_of_date: date,
+) -> Decimal:
+    source = source_currency.upper()
+    target = account_currency.upper()
+    if source == target:
+        return Decimal("1")
+
+    direct_rate = _latest_fx_rate(session, source, target, as_of_date)
+    if direct_rate is not None:
+        return direct_rate
+
+    inverse_rate = _latest_fx_rate(session, target, source, as_of_date)
+    if inverse_rate is not None and inverse_rate != 0:
+        return Decimal("1") / inverse_rate
+
+    raise ValueError(
+        f"No FX rate is available to convert {source} to {target} on or before "
+        f"{as_of_date.isoformat()}."
+    )
+
+
+def _latest_fx_rate(
+    session: object,
+    base_currency: str,
+    quote_currency: str,
+    as_of_date: date,
+) -> Decimal | None:
+    rate = session.scalar(
+        select(FxRateHistory)
+        .where(
+            FxRateHistory.base_currency_code == base_currency.upper(),
+            FxRateHistory.quote_currency_code == quote_currency.upper(),
+            FxRateHistory.date <= as_of_date,
+        )
+        .order_by(FxRateHistory.date.desc())
+        .limit(1)
+    )
+    return rate.close if rate else None
+
 def list_orders(
     account_filter: str = "Real",
     status_filter: str = "All",
@@ -302,6 +431,7 @@ def list_orders(
                 "Asset/Ticker": security.ticker if security is not None else "CASH",
                 "Quantity": _decimal_or_empty(order.target_quantity),
                 "Price": _decimal_or_empty(order.target_price or order.target_cash_amount),
+                "Currency": order.currency_code,
                 "Status": order.status.value,
                 "Market vs Target": _market_vs_target_tag(
                     order_type=order.order_type,
@@ -322,6 +452,7 @@ def list_orders(
             "Asset/Ticker",
             "Quantity",
             "Price",
+            "Currency",
             "Status",
             "Market vs Target",
         ],

@@ -12,11 +12,15 @@ from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import account_choices, parse_choice_id
 from portfolio_management.services.analytics import LIVE_MODE, SANDBOX_MODE, current_positions
 
+DEFAULT_TARGET_DRIFT_PERCENT = Decimal("5")
+
 
 def create_target_allocation(
     account_choice: str | int | None,
     asset_class: str,
     target_weight_percent: str,
+    drift_up_percent: str | int | float | Decimal = DEFAULT_TARGET_DRIFT_PERCENT,
+    drift_down_percent: str | int | float | Decimal = DEFAULT_TARGET_DRIFT_PERCENT,
 ) -> str:
     account_id = parse_choice_id(account_choice)
     if account_id is None:
@@ -25,6 +29,8 @@ def create_target_allocation(
     target_weight = Decimal(str(target_weight_percent).strip()) / Decimal("100")
     if target_weight < 0 or target_weight > 1:
         raise ValueError("Target weight must be between 0 and 100.")
+    drift_up = _parse_positive_percent(drift_up_percent, "Drift Up (%)")
+    drift_down = _parse_positive_percent(drift_down_percent, "Drift Down (%)")
 
     asset_class = AssetClass(asset_class).value
     session_factory = get_session_factory()
@@ -43,16 +49,23 @@ def create_target_allocation(
                 account=account,
                 strategy=strategy,
                 allocation_weight=target_weight,
+                drift_up_percent=drift_up,
+                drift_down_percent=drift_down,
                 created_at=timestamp,
                 updated_at=timestamp,
             )
             session.add(account_strategy)
         else:
             account_strategy.allocation_weight = target_weight
+            account_strategy.drift_up_percent = drift_up
+            account_strategy.drift_down_percent = drift_down
             account_strategy.updated_at = timestamp
         session.commit()
 
-    return f"Set {asset_class} target to {target_weight_percent}%."
+    return (
+        f"Set {asset_class} target to {target_weight_percent}% "
+        f"(up {drift_up}%, down {drift_down}%)."
+    )
 
 
 def delete_target_allocation(
@@ -116,6 +129,8 @@ def target_allocations(account_choice: str | int | None) -> pd.DataFrame:
             {
                 "Asset Class": strategy.name,
                 "Target %": str(account_strategy.allocation_weight * Decimal("100")),
+                "Drift Up %": str(account_strategy.drift_up_percent),
+                "Drift Down %": str(account_strategy.drift_down_percent),
             }
             for account_strategy, strategy in rows
         ]
@@ -166,7 +181,11 @@ def rebalance_report(
         total_value = sum(actual_by_asset_class.values(), Decimal("0"))
 
     target_by_asset_class = {
-        strategy.name: account_strategy.allocation_weight
+        strategy.name: (
+            account_strategy.allocation_weight,
+            account_strategy.drift_up_percent,
+            account_strategy.drift_down_percent,
+        )
         for account_strategy, strategy in target_rows
     }
     asset_classes = sorted(set(actual_by_asset_class) | set(target_by_asset_class))
@@ -175,16 +194,23 @@ def rebalance_report(
     for asset_class in asset_classes:
         current_value = actual_by_asset_class.get(asset_class, Decimal("0"))
         actual_weight = current_value / total_value if total_value else Decimal("0")
-        target_weight = target_by_asset_class.get(asset_class, Decimal("0"))
+        target_weight, drift_up, drift_down = target_by_asset_class.get(
+            asset_class,
+            (Decimal("0"), DEFAULT_TARGET_DRIFT_PERCENT, DEFAULT_TARGET_DRIFT_PERCENT),
+        )
         drift = actual_weight - target_weight
+        drift_pct = drift * Decimal("100")
         target_value = total_value * target_weight
-        trade_value = target_value - current_value
-        if trade_value > 0:
-            action = "BUY"
-        elif trade_value < 0:
+        raw_trade_value = target_value - current_value
+        if drift_pct > drift_up:
             action = "SELL"
+            trade_value = abs(raw_trade_value)
+        elif drift_pct < -drift_down:
+            action = "BUY"
+            trade_value = abs(raw_trade_value)
         else:
             action = "HOLD"
+            trade_value = Decimal("0")
 
         records.append(
             {
@@ -193,8 +219,10 @@ def rebalance_report(
                 "Actual %": str(actual_weight * Decimal("100")),
                 "Target %": str(target_weight * Decimal("100")),
                 "Drift %": str(drift * Decimal("100")),
+                "Drift Up %": str(drift_up),
+                "Drift Down %": str(drift_down),
                 "Action": action,
-                "Trade Value": str(abs(trade_value)),
+                "Trade Value": str(trade_value),
             }
         )
 
@@ -207,7 +235,10 @@ def default_rebalance_account_choice() -> str | None:
 
 
 def _target_dataframe(records: list[dict[str, str]]) -> pd.DataFrame:
-    return pd.DataFrame(records, columns=["Asset Class", "Target %"])
+    return pd.DataFrame(
+        records,
+        columns=["Asset Class", "Target %", "Drift Up %", "Drift Down %"],
+    )
 
 
 def _rebalance_dataframe(records: list[dict[str, str]]) -> pd.DataFrame:
@@ -219,9 +250,31 @@ def _rebalance_dataframe(records: list[dict[str, str]]) -> pd.DataFrame:
             "Actual %",
             "Target %",
             "Drift %",
+            "Drift Up %",
+            "Drift Down %",
             "Action",
             "Trade Value",
         ],
+    )
+
+
+def target_allocations_cash_void_message(account_choice: str | int | None) -> str:
+    targets = target_allocations(account_choice)
+    if targets.empty:
+        return "Cash void: no target allocations are configured."
+
+    total = sum(_to_decimal(value) for value in targets["Target %"])
+    difference = Decimal("100") - total
+    if difference == 0:
+        return "Targets total 100%; no cash void."
+    if difference > 0:
+        return (
+            f"Cash void: targets total {_format_percent(total)}%, "
+            f"leaving {_format_percent(difference)}% unallocated."
+        )
+    return (
+        f"Cash void: targets total {_format_percent(total)}%, "
+        f"over-allocated by {_format_percent(abs(difference))}%."
     )
 
 
@@ -230,3 +283,20 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal("0")
+
+
+def _parse_positive_percent(value: str | int | float | Decimal, field_label: str) -> Decimal:
+    try:
+        parsed = Decimal(str(value).strip())
+    except Exception as exc:
+        raise ValueError(f"Invalid value for '{field_label}'.") from exc
+    if parsed <= 0:
+        raise ValueError(f"'{field_label}' must be greater than zero.")
+    return parsed
+
+
+def _format_percent(value: Decimal) -> str:
+    normalized = value.normalize()
+    if normalized == normalized.to_integral():
+        return str(normalized.quantize(Decimal("1")))
+    return format(normalized, "f").rstrip("0").rstrip(".")

@@ -358,6 +358,7 @@ def build_app() -> gr.Blocks:
                 rebalance["rebalance_account"],
                 rebalance["saved_target"],
                 rebalance["target_allocations_table"],
+                rebalance["cash_void_message"],
                 rebalance["rebalance_table"],
             ],
         )

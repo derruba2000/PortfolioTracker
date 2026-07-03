@@ -28,6 +28,7 @@ from portfolio_management.services.rebalancing import (
     delete_target_allocation,
     rebalance_report,
     target_allocations,
+    target_allocations_cash_void_message,
 )
 
 
@@ -83,10 +84,99 @@ def test_rebalance_report_compares_actual_to_targets(monkeypatch) -> None:
 
     assert targets.loc[0, "Asset Class"] == "EQUITY"
     assert Decimal(str(targets.loc[0, "Target %"])) == Decimal("60")
+    assert Decimal(str(targets.loc[0, "Drift Up %"])) == Decimal("5")
+    assert Decimal(str(targets.loc[0, "Drift Down %"])) == Decimal("5")
     assert Decimal(str(report.loc[0, "Actual %"])) == Decimal("100")
     assert Decimal(str(report.loc[0, "Target %"])) == Decimal("60")
+    assert Decimal(str(report.loc[0, "Drift Up %"])) == Decimal("5")
+    assert Decimal(str(report.loc[0, "Drift Down %"])) == Decimal("5")
     assert report.loc[0, "Action"] == "SELL"
     assert Decimal(str(report.loc[0, "Trade Value"])) == Decimal("400")
+    assert target_allocations_cash_void_message(account_choice) == (
+        "Cash void: targets total 60%, leaving 40% unallocated."
+    )
+
+
+def test_rebalance_target_drifts_are_saved_and_gate_actions(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="AAPL",
+            name="Apple Inc.",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all(
+            [
+                Transaction(
+                    portfolio=portfolio,
+                    security=security,
+                    date=datetime(2026, 1, 1),
+                    type=TransactionType.BUY,
+                    quantity=10,
+                    price=Decimal("100"),
+                    fees=Decimal("0"),
+                    total_value=Decimal("1000"),
+                    currency_exchange_rate=Decimal("1"),
+                ),
+                PriceHistory(
+                    security=security,
+                    date=date(2026, 1, 1),
+                    close_price=Decimal("100"),
+                ),
+            ]
+        )
+        session.commit()
+        account_choice = f"{account.id} | Broker / ISA"
+
+    _patch_session(monkeypatch, engine)
+
+    create_target_allocation(
+        account_choice,
+        "EQUITY",
+        "96",
+        drift_up_percent="5",
+        drift_down_percent="8",
+    )
+    targets = target_allocations(account_choice)
+    report = rebalance_report(account_choice)
+
+    assert Decimal(str(targets.loc[0, "Drift Up %"])) == Decimal("5")
+    assert Decimal(str(targets.loc[0, "Drift Down %"])) == Decimal("8")
+    assert Decimal(str(report.loc[0, "Drift %"])) == Decimal("4")
+    assert report.loc[0, "Action"] == "HOLD"
+    assert Decimal(str(report.loc[0, "Trade Value"])) == Decimal("0")
+
+
+def test_rebalance_target_drifts_must_be_positive(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        session.add(account)
+        session.commit()
+        account_choice = f"{account.id} | Broker / ISA"
+
+    _patch_session(monkeypatch, engine)
+
+    try:
+        create_target_allocation(
+            account_choice,
+            "EQUITY",
+            "60",
+            drift_up_percent="0",
+        )
+    except ValueError as exc:
+        assert "must be greater than zero" in str(exc)
+    else:
+        raise AssertionError("Expected target drift validation to reject zero.")
 
 
 def test_target_allocation_timestamps_insert_and_update(monkeypatch) -> None:

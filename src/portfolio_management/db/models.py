@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -200,6 +201,18 @@ class AccountStrategy(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
     strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
     allocation_weight: Mapped[Decimal] = mapped_column(Numeric(32, 10), nullable=False)
+    drift_up_percent: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("5"),
+        server_default=text("5"),
+    )
+    drift_down_percent: Mapped[Decimal] = mapped_column(
+        Numeric(32, 10),
+        nullable=False,
+        default=Decimal("5"),
+        server_default=text("5"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -216,6 +229,11 @@ class AccountStrategy(Base):
 
     account: Mapped[Account] = relationship(back_populates="account_strategies")
     strategy: Mapped[Strategy] = relationship(back_populates="account_strategies")
+
+    __table_args__ = (
+        CheckConstraint("drift_up_percent > 0", name="ck_account_strategies_drift_up_positive"),
+        CheckConstraint("drift_down_percent > 0", name="ck_account_strategies_drift_down_positive"),
+    )
 
 
 class Security(Base):
@@ -252,6 +270,12 @@ class Order(Base):
     target_quantity: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
     target_price: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
     target_cash_amount: Mapped[Decimal | None] = mapped_column(Numeric(32, 10))
+    currency_code: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        default="USD",
+        server_default=text("'USD'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

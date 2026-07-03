@@ -69,6 +69,104 @@ def test_sqlite_decimal_round_trips_exactly() -> None:
         assert account_strategy.allocation_weight == Decimal(
             "0.3333333333"
         )
+        assert account_strategy.drift_up_percent == Decimal("5.0000000000")
+        assert account_strategy.drift_down_percent == Decimal("5.0000000000")
+
+
+def test_account_strategy_drift_columns_are_migrated() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE account_strategies"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE account_strategies (
+                    account_id INTEGER NOT NULL,
+                    strategy_id INTEGER NOT NULL,
+                    allocation_weight VARCHAR(255) NOT NULL,
+                    PRIMARY KEY (account_id, strategy_id)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO account_strategies (
+                    account_id,
+                    strategy_id,
+                    allocation_weight
+                ) VALUES (1, 1, '0.6')
+                """
+            )
+        )
+
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(account_strategies)"))
+        }
+        row = connection.execute(
+            text(
+                """
+                SELECT allocation_weight, drift_up_percent, drift_down_percent
+                FROM account_strategies
+                """
+            )
+        ).one()
+
+    assert {"drift_up_percent", "drift_down_percent"}.issubset(columns)
+    assert Decimal(str(row[0])) == Decimal("0.6")
+    assert Decimal(str(row[1])) == Decimal("5")
+    assert Decimal(str(row[2])) == Decimal("5")
+
+
+def test_portfolio_target_drift_column_is_dropped_on_migration() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE portfolios "
+                "ADD COLUMN target_drift_percent NUMERIC NOT NULL DEFAULT 5"
+            )
+        )
+    with Session(engine) as session:
+        broker = Broker(name="Broker")
+        account = Account(broker=broker, name="ISA", currency_code="USD")
+        portfolio = Portfolio(account=account, name="Core")
+        session.add(portfolio)
+        session.commit()
+        portfolio_id = portfolio.id
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE portfolios
+                SET target_drift_percent = 7
+                WHERE id = :portfolio_id
+                """
+            ),
+            {"portfolio_id": portfolio_id},
+        )
+
+    migrate_sqlite_schema(engine)
+
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(portfolios)"))
+        }
+        row = connection.execute(
+            text("SELECT id, account_id, name, is_active FROM portfolios")
+        ).one()
+
+    assert "target_drift_percent" not in columns
+    assert row == (1, 1, "Core", 1)
 
 
 def test_orders_table_has_required_columns() -> None:
@@ -90,6 +188,7 @@ def test_orders_table_has_required_columns() -> None:
         "target_quantity",
         "target_price",
         "target_cash_amount",
+        "currency_code",
         "created_at",
         "executed_at",
     }

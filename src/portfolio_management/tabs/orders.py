@@ -10,13 +10,17 @@ import pandas as pd
 from portfolio_management.services.analysis_filters import account_mode_to_table_filter
 from portfolio_management.services.analytics import LIVE_MODE
 from portfolio_management.services.orders import (
+    buy_order_price_defaults,
     cancel_order,
     create_order,
     list_order_portfolio_choices,
     list_orders,
     list_pending_order_choices,
     mark_order_completed,
+    order_execution_defaults,
+    portfolio_account_currency,
 )
+from portfolio_management.services.reference_data import list_currency_codes
 from portfolio_management.services.securities import list_security_tickers
 from portfolio_management.tabs._shared import (
     format_decimal_input,
@@ -71,6 +75,7 @@ def refresh_orders_for_mode(account_mode: str) -> object:
 def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
     default_end_date = date_type.today()
     default_start_date = default_end_date - timedelta(days=29)
+    initial_portfolios = _portfolio_choices_for_mode(LIVE_MODE)
 
     with gr.Tab("Orders"):
         status = gr.Textbox(label="Status", interactive=False)
@@ -78,7 +83,7 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
         with gr.Row():
             portfolio_choice = gr.Dropdown(
                 label="Portfolio",
-                choices=_portfolio_choices_for_mode(LIVE_MODE),
+                choices=initial_portfolios,
             )
             order_type = gr.Dropdown(
                 label="Action Type",
@@ -95,7 +100,16 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
             )
             target_quantity = gr.Textbox(label="Target Quantity", visible=True)
             target_limit_price = gr.Textbox(label="Target Limit Price", visible=True)
+            currency_code = gr.Dropdown(
+                label="Currency",
+                choices=list_currency_codes(),
+                value=_default_currency_for_portfolio_choice(
+                    initial_portfolios[0] if initial_portfolios else None
+                ),
+                allow_custom_value=True,
+            )
             target_cash_amount = gr.Textbox(label="Target Cash Amount", visible=False)
+            security_current_price = gr.Markdown(value="", visible=True)
 
         create_order_button = gr.Button("Create Order", variant="primary")
 
@@ -156,6 +170,7 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
                 "Asset/Ticker",
                 "Quantity",
                 "Price",
+                "Currency",
                 "Status",
                 "Market vs Target",
             ],
@@ -165,6 +180,7 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
                 "markdown",
                 "str",
                 "markdown",
+                "str",
                 "str",
                 "str",
                 "str",
@@ -197,15 +213,32 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
             outputs=[
                 portfolio_choice,
                 security_ticker,
+                currency_code,
                 portfolio_filter,
                 cancel_order_choice,
                 execute_order_choice,
             ],
         )
+        portfolio_choice.change(
+            fn=_portfolio_choice_changed,
+            inputs=[portfolio_choice],
+            outputs=[currency_code],
+        )
         order_type.change(
             fn=_order_type_changed,
-            inputs=[order_type],
-            outputs=[security_ticker, target_quantity, target_limit_price, target_cash_amount],
+            inputs=[order_type, security_ticker],
+            outputs=[
+                security_ticker,
+                target_quantity,
+                target_limit_price,
+                target_cash_amount,
+                security_current_price,
+            ],
+        )
+        security_ticker.change(
+            fn=_security_ticker_changed,
+            inputs=[order_type, security_ticker],
+            outputs=[target_limit_price, security_current_price],
         )
         create_order_button.click(
             fn=_create_order_callback,
@@ -215,6 +248,7 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
                 security_ticker,
                 target_quantity,
                 target_limit_price,
+                currency_code,
                 target_cash_amount,
                 mode_toggle,
                 status_filter,
@@ -223,6 +257,11 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
                 end_date_filter,
             ],
             outputs=[status, orders_table_component, cancel_order_choice, execute_order_choice],
+        )
+        execute_order_choice.change(
+            fn=_execute_order_choice_changed,
+            inputs=[execute_order_choice],
+            outputs=[actual_quantity, actual_price, actual_fees],
         )
         cancel_order_button.click(
             fn=_cancel_order_callback,
@@ -284,7 +323,9 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
         "security_ticker": security_ticker,
         "target_quantity": target_quantity,
         "target_limit_price": target_limit_price,
+        "currency_code": currency_code,
         "target_cash_amount": target_cash_amount,
+        "security_current_price": security_current_price,
         "create_order_button": create_order_button,
         "cancel_order_choice": cancel_order_choice,
         "cancel_order_button": cancel_order_button,
@@ -314,27 +355,57 @@ def _portfolio_choices_for_mode(account_mode: str) -> list[str]:
     return list_order_portfolio_choices(orders_filter)
 
 
-def _orders_mode_changed(account_mode: str) -> tuple[object, object, object, object, object]:
+def _orders_mode_changed(account_mode: str) -> tuple[object, object, object, object, object, object]:
     portfolios = _portfolio_choices_for_mode(account_mode)
     selected = portfolios[0] if portfolios else None
     filter_portfolios = _portfolio_filter_choices_for_mode(account_mode)
     pending_orders = _pending_order_choices_for_mode(account_mode)
+    currencies = list_currency_codes()
+    selected_currency = _default_currency_for_portfolio_choice(selected)
     return (
         gr.update(choices=portfolios, value=selected),
         gr.update(choices=list_security_tickers()),
+        gr.update(choices=currencies, value=selected_currency),
         gr.update(choices=filter_portfolios, value=ALL_PORTFOLIOS),
         gr.update(choices=pending_orders, value=pending_orders[0] if pending_orders else None),
         gr.update(choices=pending_orders, value=pending_orders[0] if pending_orders else None),
     )
 
 
-def _order_type_changed(selected_order_type: str) -> tuple[object, object, object, object]:
+def _portfolio_choice_changed(portfolio_choice: str | None) -> object:
+    return gr.update(value=_default_currency_for_portfolio_choice(portfolio_choice))
+
+
+def _order_type_changed(
+    selected_order_type: str,
+    security_ticker: str | None,
+) -> tuple[object, object, object, object, object]:
     buy_or_sell = selected_order_type in {"BUY", "SELL"}
+    price, target_price, trend = (
+        buy_order_price_defaults(security_ticker)
+        if selected_order_type == "BUY"
+        else ("", "", "none")
+    )
     return (
         gr.update(visible=buy_or_sell, value=None),
         gr.update(visible=buy_or_sell, value=""),
-        gr.update(visible=buy_or_sell, value=""),
+        gr.update(visible=buy_or_sell, value=target_price),
         gr.update(visible=not buy_or_sell, value=""),
+        gr.update(
+            visible=selected_order_type == "BUY" and bool(price),
+            value=_current_price_badge(price, trend),
+        ),
+    )
+
+
+def _security_ticker_changed(order_type: str, security_ticker: str | None) -> tuple[object, object]:
+    if order_type != "BUY":
+        return gr.update(), gr.update(value="", visible=False)
+
+    price, target_price, trend = buy_order_price_defaults(security_ticker)
+    return (
+        gr.update(value=target_price),
+        gr.update(value=_current_price_badge(price, trend), visible=bool(price)),
     )
 
 
@@ -344,6 +415,7 @@ def _create_order_callback(
     security_ticker: str,
     target_quantity: str,
     target_limit_price: str,
+    currency_code: str,
     target_cash_amount: str,
     account_mode: str,
     status_filter: str,
@@ -359,6 +431,7 @@ def _create_order_callback(
             target_quantity=target_quantity,
             target_price=target_limit_price,
             target_cash_amount=target_cash_amount,
+            currency_code=currency_code,
         )
     except Exception as exc:
         return (
@@ -395,6 +468,38 @@ def _portfolio_filter_choices_for_mode(account_mode: str) -> list[str]:
 def _pending_order_choices_for_mode(account_mode: str) -> list[str]:
     orders_filter = account_mode_to_table_filter(account_mode)
     return list_pending_order_choices(orders_filter)
+
+
+def _execute_order_choice_changed(order_choice: str | None) -> tuple[object, object, object]:
+    quantity, price, fees = order_execution_defaults(order_choice)
+    return gr.update(value=quantity), gr.update(value=price), gr.update(value=fees)
+
+
+def _default_currency_for_portfolio_choice(portfolio_choice: str | None) -> str | None:
+    currency = portfolio_account_currency(portfolio_choice)
+    return currency or None
+
+
+def _current_price_badge(price: str, trend: str) -> str:
+    if not price:
+        return ""
+    color_by_trend = {
+        "up": "#16a34a",
+        "down": "#dc2626",
+        "flat": "#6b7280",
+    }
+    arrow_by_trend = {
+        "up": "▲",
+        "down": "▼",
+        "flat": "=",
+    }
+    color = color_by_trend.get(trend, "#6b7280")
+    arrow = arrow_by_trend.get(trend, "=")
+    style = (
+        f"background:{color};color:white;padding:3px 8px;"
+        "border-radius:4px;font-weight:600;font-size:0.9em;"
+    )
+    return f'<span style="{style}">{arrow} Current {price}</span>'
 
 
 def _orders_filtered_table(
