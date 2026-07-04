@@ -31,6 +31,7 @@ from portfolio_management.services.orders import (
     list_orders,
     mark_order_completed,
     order_execution_defaults,
+    order_execution_preview,
 )
 from portfolio_management.tabs.orders import orders_table
 
@@ -591,6 +592,88 @@ def test_mark_completed_buy_generates_two_linked_transactions_with_legacy_math(m
     assert asset_leg.total_value == Decimal("201.5")
     assert cash_leg.type == TransactionType.WITHDRAWAL
     assert cash_leg.total_value == Decimal("-201.5")
+
+
+def test_mark_completed_buy_uses_configured_broker_fees_when_not_overridden(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "portfolio_management.services.orders.get_session_factory",
+        lambda: sessionmaker(bind=engine, expire_on_commit=False, future=True),
+    )
+
+    with Session(engine) as session:
+        broker = Broker(
+            name="Fee Broker",
+            trade_fee_fixed=Decimal("1"),
+            trade_fee_percent=Decimal("0.5"),
+            spread_fee_percent=Decimal("0.25"),
+            stamp_duty_percent=Decimal("0.5"),
+            regulatory_fee_percent=Decimal("0.1"),
+        )
+        account = Account(broker=broker, name="Live", currency_code="USD", is_simulated=False)
+        portfolio = Portfolio(account=account, name="Core")
+        security = Security(
+            ticker="VTI",
+            name="Vanguard Total Stock Market ETF",
+            asset_class=AssetClass.EQUITY,
+            currency_code="USD",
+        )
+        session.add_all([broker, account, portfolio, security])
+        session.flush()
+        session.add(
+            Transaction(
+                portfolio=portfolio,
+                security=None,
+                date=datetime(2026, 6, 30, 9, 0, 0),
+                type=TransactionType.DEPOSIT,
+                description="Seed cash",
+                quantity=Decimal("1"),
+                price=Decimal("10000"),
+                fees=Decimal("0"),
+                total_value=Decimal("10000"),
+                currency_exchange_rate=Decimal("1"),
+            )
+        )
+        order = Order(
+            portfolio=portfolio,
+            security=security,
+            order_type=OrderType.BUY,
+            status=OrderStatus.PENDING,
+            target_quantity=Decimal("2"),
+            target_price=Decimal("100"),
+            currency_code="USD",
+        )
+        session.add(order)
+        session.commit()
+        order_id = order.id
+
+    quantity, price, fees = order_execution_defaults(f"{order_id} | BUY VTI")
+    preview = order_execution_preview(f"{order_id} | BUY VTI", quantity, price, fees)
+
+    assert fees == "3.7000000000"
+    assert "Total fees applied: 3.7 USD" in preview
+    assert "Gross volume: 200 USD" in preview
+
+    _ = mark_order_completed(
+        order_choice=f"{order_id} | BUY VTI",
+        actual_quantity="2",
+        actual_price="100",
+        actual_fees="0",
+    )
+
+    with Session(engine) as session:
+        transactions = (
+            session.query(Transaction).filter(Transaction.order_id == order_id).order_by(Transaction.id).all()
+        )
+
+    asset_leg = [txn for txn in transactions if txn.security_id is not None][0]
+    cash_leg = [txn for txn in transactions if txn.security_id is None][0]
+
+    assert asset_leg.fees == Decimal("3.7000000000")
+    assert asset_leg.total_value == Decimal("203.7000000000")
+    assert cash_leg.total_value == Decimal("-203.7000000000")
 
 
 def test_mark_completed_withdraw_generates_single_cash_transaction(monkeypatch) -> None:

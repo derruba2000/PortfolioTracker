@@ -18,6 +18,7 @@ from portfolio_management.services.orders import (
     list_pending_order_choices,
     mark_order_completed,
     order_execution_defaults,
+    order_execution_preview,
     portfolio_account_currency,
 )
 from portfolio_management.services.reference_data import list_currency_codes
@@ -129,6 +130,12 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
             actual_price = gr.Textbox(label="Actual Execution Price", value="0")
             actual_fees = gr.Textbox(label="Actual Broker Fees", value="0")
             mark_completed_button = gr.Button("Mark as Completed", variant="primary")
+        execution_fee_preview = gr.Textbox(
+            label="Execution Preview",
+            value="Select a pending order to preview execution quantities, volume, and fees.",
+            interactive=False,
+            lines=16,
+        )
 
         with gr.Row():
             status_filter = gr.Dropdown(
@@ -261,7 +268,22 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
         execute_order_choice.change(
             fn=_execute_order_choice_changed,
             inputs=[execute_order_choice],
-            outputs=[actual_quantity, actual_price, actual_fees],
+            outputs=[actual_quantity, actual_price, actual_fees, execution_fee_preview],
+        )
+        actual_quantity.change(
+            fn=_execution_preview_changed,
+            inputs=[execute_order_choice, actual_quantity, actual_price, actual_fees],
+            outputs=[execution_fee_preview],
+        )
+        actual_price.change(
+            fn=_execution_preview_changed,
+            inputs=[execute_order_choice, actual_quantity, actual_price, actual_fees],
+            outputs=[execution_fee_preview],
+        )
+        actual_fees.change(
+            fn=_execution_preview_changed,
+            inputs=[execute_order_choice, actual_quantity, actual_price, actual_fees],
+            outputs=[execution_fee_preview],
         )
         cancel_order_button.click(
             fn=_cancel_order_callback,
@@ -333,6 +355,7 @@ def build_orders_tab(mode_toggle: gr.Radio) -> dict[str, Any]:
         "actual_quantity": actual_quantity,
         "actual_price": actual_price,
         "actual_fees": actual_fees,
+        "execution_fee_preview": execution_fee_preview,
         "mark_completed_button": mark_completed_button,
         "status_filter": status_filter,
         "portfolio_filter": portfolio_filter,
@@ -470,9 +493,19 @@ def _pending_order_choices_for_mode(account_mode: str) -> list[str]:
     return list_pending_order_choices(orders_filter)
 
 
-def _execute_order_choice_changed(order_choice: str | None) -> tuple[object, object, object]:
+def _execute_order_choice_changed(order_choice: str | None) -> tuple[object, object, object, str]:
     quantity, price, fees = order_execution_defaults(order_choice)
-    return gr.update(value=quantity), gr.update(value=price), gr.update(value=fees)
+    preview = order_execution_preview(order_choice, quantity, price, fees)
+    return gr.update(value=quantity), gr.update(value=price), gr.update(value=fees), preview
+
+
+def _execution_preview_changed(
+    order_choice: str | None,
+    quantity: str,
+    price: str,
+    fees: str,
+) -> str:
+    return order_execution_preview(order_choice, quantity, price, fees)
 
 
 def _default_currency_for_portfolio_choice(portfolio_choice: str | None) -> str | None:

@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import UTC
 from decimal import Decimal
 from decimal import InvalidOperation
+from dataclasses import dataclass
 
 import pandas as pd
 from sqlalchemy import func
@@ -27,6 +28,46 @@ from portfolio_management.db.session import get_session_factory
 from portfolio_management.services.accounts import parse_choice_id
 from portfolio_management.services.reference_data import ensure_currency_code
 from portfolio_management.services.transactions import TransactionInput, create_transaction
+
+
+DECIMAL_QUANTUM = Decimal("0.0000000001")
+
+
+@dataclass(frozen=True)
+class OrderFeeEstimate:
+    order_type: OrderType
+    quantity: Decimal
+    price: Decimal
+    gross_value: Decimal
+    trade_fee_fixed: Decimal = Decimal("0")
+    trade_fee_percent_amount: Decimal = Decimal("0")
+    spread_fee_amount: Decimal = Decimal("0")
+    fx_fee_amount: Decimal = Decimal("0")
+    stamp_duty_amount: Decimal = Decimal("0")
+    regulatory_fee_amount: Decimal = Decimal("0")
+    cash_fee_fixed: Decimal = Decimal("0")
+
+    @property
+    def total_fees(self) -> Decimal:
+        return _quantize_decimal(
+            self.trade_fee_fixed
+            + self.trade_fee_percent_amount
+            + self.spread_fee_amount
+            + self.fx_fee_amount
+            + self.stamp_duty_amount
+            + self.regulatory_fee_amount
+            + self.cash_fee_fixed
+        )
+
+    @property
+    def net_cash_impact(self) -> Decimal:
+        if self.order_type == OrderType.BUY:
+            return -(self.gross_value + self.total_fees)
+        if self.order_type == OrderType.SELL:
+            return self.gross_value - self.total_fees
+        if self.order_type == OrderType.DEPOSIT:
+            return self.gross_value - self.total_fees
+        return -(self.gross_value + self.total_fees)
 
 
 def create_order(
@@ -197,7 +238,7 @@ def mark_order_completed(
 
     quantity = _parse_positive_decimal(actual_quantity, field_name="Actual execution quantity")
     price = _parse_non_negative_decimal(actual_price, field_name="Actual execution price")
-    fees = _parse_non_negative_decimal(actual_fees, field_name="Actual broker fees")
+    manual_fees = _parse_non_negative_decimal(actual_fees, field_name="Actual broker fees")
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -206,6 +247,14 @@ def mark_order_completed(
             raise ValueError(f"Order id {order_id} does not exist.")
         if order.status != OrderStatus.PENDING:
             raise ValueError("Only PENDING orders can be marked as completed.")
+
+        fees = manual_fees
+        if fees == 0:
+            fees = calculate_order_fee_estimate(
+                order=order,
+                quantity=quantity,
+                price=price,
+            ).total_fees
 
         transaction_type = _transaction_type_from_order_type(order.order_type)
         ticker = order.security.ticker if order.security is not None else None
@@ -291,12 +340,123 @@ def order_execution_defaults(order_choice: str | int | None) -> tuple[str, str, 
         if order is None:
             return "1", "0", "0"
         if order.order_type in {OrderType.DEPOSIT, OrderType.WITHDRAW}:
-            return "1", _decimal_or_empty(order.target_cash_amount), "0"
+            quantity = Decimal("1")
+            price = order.target_cash_amount or Decimal("0")
+            fees = calculate_order_fee_estimate(order=order, quantity=quantity, price=price).total_fees
+            return "1", _decimal_or_empty(order.target_cash_amount), _fee_decimal_or_empty(fees)
+        quantity = order.target_quantity or Decimal("1")
+        price = order.target_price or Decimal("0")
+        fees = calculate_order_fee_estimate(order=order, quantity=quantity, price=price).total_fees
         return (
             _decimal_or_empty(order.target_quantity) or "1",
             _decimal_or_empty(order.target_price) or "0",
-            "0",
+            _fee_decimal_or_empty(fees),
         )
+
+
+def order_execution_preview(
+    order_choice: str | int | None,
+    actual_quantity: str | Decimal | None,
+    actual_price: str | Decimal | None,
+    actual_fees: str | Decimal | None = None,
+) -> str:
+    order_id = parse_choice_id(order_choice)
+    if order_id is None:
+        return "Select a pending order to preview execution quantities, volume, and fees."
+
+    try:
+        quantity = _parse_positive_decimal(actual_quantity, field_name="Actual execution quantity")
+        price = _parse_non_negative_decimal(actual_price, field_name="Actual execution price")
+        manual_fees = _parse_non_negative_decimal(actual_fees, field_name="Actual broker fees")
+    except ValueError as exc:
+        return f"Cannot preview execution: {exc}"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            return f"Order id {order_id} does not exist."
+        estimate = calculate_order_fee_estimate(order=order, quantity=quantity, price=price)
+        account_currency = order.portfolio.account.currency_code
+        order_currency = (order.currency_code or account_currency).upper()
+        ticker = order.security.ticker if order.security is not None else "cash"
+
+    applied_fees = manual_fees if manual_fees > 0 else estimate.total_fees
+    fee_source = "manual override" if manual_fees > 0 else "broker fee schedule"
+    gross_value = quantity * price
+    if estimate.order_type == OrderType.BUY:
+        net_cash = -(gross_value + applied_fees)
+    elif estimate.order_type == OrderType.SELL:
+        net_cash = gross_value - applied_fees
+    elif estimate.order_type == OrderType.DEPOSIT:
+        net_cash = gross_value - applied_fees
+    else:
+        net_cash = -(gross_value + applied_fees)
+
+    return "\n".join(
+        [
+            f"Order: {estimate.order_type.value} {ticker}",
+            f"Quantity: {_format_decimal(quantity)}",
+            f"Execution price: {_format_decimal(price)} {order_currency}",
+            f"Gross volume: {_format_decimal(gross_value)} {order_currency}",
+            "",
+            "Estimated fees:",
+            f"- Fixed trade fee: {_format_decimal(estimate.trade_fee_fixed)} {order_currency}",
+            f"- Trade percentage fee: {_format_decimal(estimate.trade_fee_percent_amount)} {order_currency}",
+            f"- Spread fee: {_format_decimal(estimate.spread_fee_amount)} {order_currency}",
+            f"- FX fee: {_format_decimal(estimate.fx_fee_amount)} {order_currency}",
+            f"- Stamp duty: {_format_decimal(estimate.stamp_duty_amount)} {order_currency}",
+            f"- Regulatory fee: {_format_decimal(estimate.regulatory_fee_amount)} {order_currency}",
+            f"- Cash movement fixed fee: {_format_decimal(estimate.cash_fee_fixed)} {order_currency}",
+            f"Total fees applied: {_format_decimal(applied_fees)} {order_currency} ({fee_source})",
+            f"Net cash impact before FX conversion: {_format_decimal(net_cash)} {order_currency}",
+            f"Account currency: {account_currency}",
+        ]
+    )
+
+
+def calculate_order_fee_estimate(
+    order: Order,
+    quantity: Decimal,
+    price: Decimal,
+) -> OrderFeeEstimate:
+    broker = order.portfolio.account.broker
+    account_currency = order.portfolio.account.currency_code.upper()
+    order_currency = (order.currency_code or account_currency).upper()
+    gross_value = quantity * price
+    uses_fx = order_currency != account_currency
+
+    if order.order_type in {OrderType.BUY, OrderType.SELL}:
+        return OrderFeeEstimate(
+            order_type=order.order_type,
+            quantity=quantity,
+            price=price,
+            gross_value=gross_value,
+            trade_fee_fixed=Decimal(str(broker.trade_fee_fixed or 0)),
+            trade_fee_percent_amount=_percent_amount(gross_value, broker.trade_fee_percent),
+            spread_fee_amount=_percent_amount(gross_value, broker.spread_fee_percent),
+            fx_fee_amount=_percent_amount(gross_value, broker.fx_fee_percent) if uses_fx else Decimal("0"),
+            stamp_duty_amount=(
+                _percent_amount(gross_value, broker.stamp_duty_percent)
+                if order.order_type == OrderType.BUY
+                else Decimal("0")
+            ),
+            regulatory_fee_amount=_percent_amount(gross_value, broker.regulatory_fee_percent),
+        )
+
+    cash_fee = (
+        Decimal(str(broker.deposit_fee_fixed or 0))
+        if order.order_type == OrderType.DEPOSIT
+        else Decimal(str(broker.withdrawal_fee_fixed or 0))
+    )
+    return OrderFeeEstimate(
+        order_type=order.order_type,
+        quantity=quantity,
+        price=price,
+        gross_value=gross_value,
+        fx_fee_amount=_percent_amount(gross_value, broker.fx_fee_percent) if uses_fx else Decimal("0"),
+        cash_fee_fixed=cash_fee,
+    )
 
 
 def buy_order_price_defaults(security_ticker: str | None) -> tuple[str, str, str]:
@@ -487,6 +647,13 @@ def _decimal_or_empty(value: Decimal | None) -> str:
     return str(value)
 
 
+def _fee_decimal_or_empty(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    normalized = _quantize_decimal(value)
+    return "0" if normalized == 0 else str(normalized)
+
+
 def _parse_positive_decimal(value: str | Decimal | None, field_name: str) -> Decimal:
     raw = str(value or "").strip().replace(",", "")
     if not raw:
@@ -511,6 +678,18 @@ def _parse_non_negative_decimal(value: str | Decimal | None, field_name: str) ->
     if parsed < 0:
         raise ValueError(f"{field_name} cannot be negative.")
     return parsed
+
+
+def _percent_amount(base_amount: Decimal, percent: Decimal | int | float | str | None) -> Decimal:
+    return base_amount * Decimal(str(percent or 0)) / Decimal("100")
+
+
+def _quantize_decimal(value: Decimal) -> Decimal:
+    return Decimal(value).quantize(DECIMAL_QUANTUM)
+
+
+def _format_decimal(value: Decimal) -> str:
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
 def _transaction_type_from_order_type(order_type: OrderType) -> TransactionType:

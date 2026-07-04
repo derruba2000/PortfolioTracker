@@ -81,7 +81,7 @@ Client portfolio profile:
 Return a numbered list of questions only, with no introduction or closing remarks."""
 
     try:
-        return _call_ollama(prompt)
+        return _call_llm(prompt)
     except ValueError as exc:
         return f"Could not generate questions: {exc}"
 
@@ -128,7 +128,7 @@ def start_ai_chat(portfolio_choice: str | int | None = None) -> list[dict[str, s
     )
 
     try:
-        opening = _call_ollama(prompt)
+        opening = _call_llm(prompt)
         return [{"role": "assistant", "content": opening}]
     except ValueError as exc:
         return [{"role": "assistant", "content": f"Could not start AI conversation: {exc}"}]
@@ -160,7 +160,7 @@ def continue_ai_chat(
     )
 
     try:
-        response = _call_ollama(prompt)
+        response = _call_llm(prompt)
     except ValueError as exc:
         response = f"Error getting response: {exc}"
 
@@ -184,7 +184,7 @@ def generate_and_store_portfolio_recommendation(
         chat_text = f"Use the saved portfolio profile for {name or 'this portfolio'}."
 
     prompt = _build_prompt(portfolio_choice, chat_text)
-    recommendation = _call_ollama(prompt, post=post)
+    recommendation = _call_llm(prompt, post=post)
     rewritten_goals = _extract_section(recommendation, "Rewritten goals") or _fallback_rewritten_goals(
         portfolio_choice,
         chat_text,
@@ -198,6 +198,13 @@ def generate_and_store_portfolio_recommendation(
         ai_notes=chat_text,
     )
     return status, rewritten_goals, recommendation, profile
+
+
+def _call_llm(prompt: str, post: Any = requests.post) -> str:
+    settings = load_settings()
+    if settings.api_usage == "NVIDIA":
+        return _call_nvidia(prompt, post=post)
+    return _call_ollama(prompt, post=post)
 
 
 def _call_ollama(prompt: str, post: Any = requests.post) -> str:
@@ -222,6 +229,52 @@ def _call_ollama(prompt: str, post: Any = requests.post) -> str:
     recommendation = str(data.get("response", "")).strip()
     if not recommendation:
         raise ValueError("Ollama returned an empty recommendation.")
+    return recommendation
+
+
+def _call_nvidia(prompt: str, post: Any = requests.post) -> str:
+    settings = load_settings()
+    if not settings.nvidia_api_key:
+        raise ValueError("NVIDIA NIM API key is not configured.")
+
+    url = f"{settings.nvidia_base_url}/chat/completions"
+    payload = {
+        "model": settings.nvidia_api_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "top_p": 0.7,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.nvidia_api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=settings.ollama_timeout_seconds,
+            verify=settings.nvidia_verify_ssl,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ValueError(f"NVIDIA NIM recommendation failed: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ValueError("NVIDIA NIM returned invalid JSON.") from exc
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise ValueError("NVIDIA NIM returned an empty recommendation.")
+    message = choices[0].get("message", {})
+    recommendation = str(message.get("content", "")).strip()
+    if not recommendation:
+        raise ValueError("NVIDIA NIM returned an empty recommendation.")
     return recommendation
 
 

@@ -10,8 +10,10 @@ from portfolio_management.services.accounts import (
     get_or_create_broker,
     portfolio_details,
 )
+from portfolio_management.config import Settings
 from portfolio_management.services.portfolio_recommendations import (
     _build_prompt,
+    _call_llm,
     generate_and_store_portfolio_recommendation,
     start_portfolio_goal_conversation,
 )
@@ -30,6 +32,14 @@ class _Response:
                 "Use a balanced growth allocation."
             )
         }
+
+
+class _NvidiaResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, list[dict[str, dict[str, str]]]]:
+        return {"choices": [{"message": {"content": "NVIDIA recommendation"}}]}
 
 
 def test_generate_and_store_portfolio_recommendation(monkeypatch) -> None:
@@ -87,6 +97,34 @@ def test_generate_and_store_portfolio_recommendation(monkeypatch) -> None:
     assert "long-term growth" in details[9]  # ai_notes contains serialised chat
     assert details[10] is not None  # llm_updated_at timestamp was set
     assert "risk tolerance" in start_portfolio_goal_conversation().lower()
+
+
+def test_call_llm_uses_nvidia_nim_when_selected(monkeypatch) -> None:
+    settings = Settings(
+        database_path="/tmp/test.sqlite3",
+        api_usage="NVIDIA",
+        nvidia_api_key="nvapi-test-secret",
+        nvidia_api_model="meta/llama-3.3-70b-instruct",
+        nvidia_base_url="https://integrate.api.nvidia.com/v1",
+        nvidia_verify_ssl=False,
+    )
+    monkeypatch.setattr(
+        "portfolio_management.services.portfolio_recommendations.load_settings",
+        lambda: settings,
+    )
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _NvidiaResponse()
+
+    result = _call_llm("Assess this portfolio.", post=post)
+
+    assert result == "NVIDIA recommendation"
+    assert calls[0][0] == ("https://integrate.api.nvidia.com/v1/chat/completions",)
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer nvapi-test-secret"
+    assert calls[0][1]["json"]["model"] == "meta/llama-3.3-70b-instruct"
+    assert calls[0][1]["verify"] is False
 
 
 def test_empty_portfolio_prompt_requests_target_asset_allocation(monkeypatch) -> None:
