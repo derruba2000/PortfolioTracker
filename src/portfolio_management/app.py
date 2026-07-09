@@ -29,7 +29,9 @@ from portfolio_management.tabs.dashboard import (
     dashboard_position_portfolio_changed,
     dashboard_positions_and_charts,
     dashboard_scope_changed,
+    market_data_asset_type_changed,
     refresh_dashboard,
+    refresh_market_data_tiles,
 )
 from portfolio_management.tabs.data_entry import build_data_entry_tab, data_entry_mode_changed
 from portfolio_management.tabs.export import build_export_tab, _export_scope_changed
@@ -250,6 +252,40 @@ def build_app() -> gr.Blocks:
                 dashboard["currency_allocation_plot"],
             ],
         )
+        market_data_inputs = [
+            dashboard["market_asset_type_filter"],
+            dashboard["market_ticker_filter"],
+            dashboard["market_start_date"],
+            dashboard["market_end_date"],
+            dashboard["market_columns_per_row"],
+            dashboard["market_tile_height"],
+        ]
+        dashboard["refresh_market_data_button"].click(
+            fn=refresh_market_data_tiles,
+            inputs=market_data_inputs,
+            outputs=[dashboard["market_data_plot"]],
+        )
+        dashboard["market_asset_type_filter"].change(
+            fn=market_data_asset_type_changed,
+            inputs=[dashboard["market_asset_type_filter"]],
+            outputs=[dashboard["market_ticker_filter"]],
+        ).then(
+            fn=refresh_market_data_tiles,
+            inputs=market_data_inputs,
+            outputs=[dashboard["market_data_plot"]],
+        )
+        for market_data_filter in [
+            dashboard["market_ticker_filter"],
+            dashboard["market_start_date"],
+            dashboard["market_end_date"],
+            dashboard["market_columns_per_row"],
+            dashboard["market_tile_height"],
+        ]:
+            market_data_filter.change(
+                fn=refresh_market_data_tiles,
+                inputs=market_data_inputs,
+                outputs=[dashboard["market_data_plot"]],
+            )
 
         # ── Cross-tab: Create Account (touches accounts + portfolios + brokers + data_entry) ──
         accounts["create_account_button"].click(
