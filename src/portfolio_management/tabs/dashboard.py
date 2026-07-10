@@ -492,6 +492,7 @@ def _market_price_frame(
                 Security.currency_code,
                 PriceHistory.date,
                 PriceHistory.close,
+                PriceHistory.volume,
             )
             .join(PriceHistory, PriceHistory.security_id == Security.id)
             .where(PriceHistory.date >= start_date, PriceHistory.date <= end_date)
@@ -504,7 +505,7 @@ def _market_price_frame(
         rows = session.execute(stmt).all()
 
     records = []
-    for ticker, name, asset_class, currency_code, price_date, close in rows:
+    for ticker, name, asset_class, currency_code, price_date, close, volume in rows:
         records.append(
             {
                 "Ticker": str(ticker),
@@ -513,11 +514,12 @@ def _market_price_frame(
                 "Currency": str(currency_code or ""),
                 "Date": price_date,
                 "Price": float(close),
+                "Volume": float(volume) if volume is not None else np.nan,
             }
         )
     return pd.DataFrame(
         records,
-        columns=["Ticker", "Name", "Asset Type", "Currency", "Date", "Price"],
+        columns=["Ticker", "Name", "Asset Type", "Currency", "Date", "Price", "Volume"],
     )
 
 
@@ -574,7 +576,7 @@ def _market_tile_html(
         "<div class='market-tile'>"
         "<div class='market-tile-title'>"
         f"<div>{ticker_link(ticker)}</div>"
-        f"<div class='market-tile-metrics'>Vol {volatility:.3f}%<br>Alpha {alpha:.3f}</div>"
+        f"<div class='market-tile-metrics'>Vol {volatility:.3f}%<br>Reg. slope {beta:.3f}</div>"
         "</div>"
         f"{chart}"
         "</div>"
@@ -588,17 +590,20 @@ def _market_tile_svg(
     beta: float,
     tile_height: int,
 ) -> str:
-    width = 900
+    width = 980
     height = tile_height
-    plot_left = 58
+    plot_left = 96
     plot_top = 24
     plot_width = 660
     plot_height = max(120, height - 78)
-    legend_x = 748
+    plot_right = plot_left + plot_width
+    legend_x = 818
     axis_bottom = plot_top + plot_height
     clip_id = "clip-" + "".join(char if char.isalnum() else "-" for char in ticker)
 
+    prices = prices.sort_values("Date").reset_index(drop=True)
     price_values = pd.to_numeric(prices["Price"], errors="coerce").to_numpy(dtype=float)
+    volume_values = pd.to_numeric(prices.get("Volume"), errors="coerce").to_numpy(dtype=float)
     dates = pd.to_datetime(prices["Date"], errors="coerce")
     x_values = np.arange(len(price_values), dtype=float)
     trend_values = alpha + beta * x_values
@@ -622,6 +627,22 @@ def _market_tile_svg(
     def y_coord(value: float) -> float:
         return plot_top + ((y_max - value) / (y_max - y_min)) * plot_height
 
+    volume_max = float(np.nanmax(volume_values)) if np.isfinite(volume_values).any() else 0.0
+    bar_slot_width = plot_width / max(len(volume_values), 1)
+    bar_width = max(3.0, min(22.0, bar_slot_width * 0.58))
+    volume_bars = "".join(
+        _volume_bar_svg(
+            x_coord(index),
+            bar_width,
+            plot_top,
+            axis_bottom,
+            plot_height,
+            value,
+            volume_max,
+        )
+        for index, value in enumerate(volume_values)
+        if np.isfinite(value) and value > 0 and volume_max > 0
+    )
     price_points = " ".join(
         f"{x_coord(index):.2f},{y_coord(value):.2f}"
         for index, value in enumerate(price_values)
@@ -646,14 +667,20 @@ def _market_tile_svg(
         "stroke='rgba(203,213,225,.55)' />"
         f"<line x1='{plot_left}' y1='{plot_top}' x2='{plot_left}' y2='{axis_bottom}' "
         "stroke='rgba(203,213,225,.55)' />"
+        f"<line x1='{plot_right}' y1='{plot_top}' x2='{plot_right}' y2='{axis_bottom}' "
+        "stroke='rgba(203,213,225,.35)' />"
         f"<text x='{plot_left - 8}' y='{plot_top + 5}' text-anchor='end' fill='#cbd5e1' "
         f"font-size='24'>{y_max:.3f}</text>"
         f"<text x='{plot_left - 8}' y='{axis_bottom}' text-anchor='end' fill='#cbd5e1' "
         f"font-size='24'>{y_min:.3f}</text>"
+        f"<text x='{plot_right + 8}' y='{plot_top + 5}' fill='#94a3b8' "
+        f"font-size='22'>{_format_compact_number(volume_max)}</text>"
+        f"<text x='{plot_right + 8}' y='{axis_bottom}' fill='#94a3b8' font-size='22'>0</text>"
         f"<text x='{plot_left}' y='{axis_bottom + 32}' fill='#cbd5e1' font-size='24'>{escape(start_label)}</text>"
-        f"<text x='{plot_left + plot_width}' y='{axis_bottom + 32}' text-anchor='end' "
+        f"<text x='{plot_right}' y='{axis_bottom + 32}' text-anchor='end' "
         f"fill='#cbd5e1' font-size='24'>{escape(end_label)}</text>"
         f"<g clip-path='url(#{escape(clip_id)})'>"
+        f"{volume_bars}"
         f"<polyline points='{price_points}' fill='none' stroke='#0ea5e9' stroke-width='4' "
         "stroke-linecap='round' stroke-linejoin='round' />"
         f"<polyline points='{trend_points}' fill='none' stroke='#f97316' stroke-width='4' "
@@ -665,8 +692,39 @@ def _market_tile_svg(
         f"<line x1='{legend_x}' y1='{plot_top + 58}' x2='{legend_x + 44}' y2='{plot_top + 58}' "
         "stroke='#f97316' stroke-width='5' stroke-dasharray='12 9' />"
         f"<text x='{legend_x + 56}' y='{plot_top + 66}' fill='#e5e7eb' font-size='24'>Regression</text>"
+        f"<rect x='{legend_x}' y='{plot_top + 84}' width='44' height='18' fill='#64748b' opacity='.38' />"
+        f"<text x='{legend_x + 56}' y='{plot_top + 104}' fill='#e5e7eb' font-size='24'>Volume</text>"
         "</svg>"
     )
+
+
+def _volume_bar_svg(
+    x_center: float,
+    width: float,
+    plot_top: float,
+    axis_bottom: float,
+    plot_height: float,
+    value: float,
+    volume_max: float,
+) -> str:
+    if volume_max <= 0:
+        return ""
+    height = max(1.0, (value / volume_max) * plot_height)
+    y = max(plot_top, axis_bottom - height)
+    return (
+        f"<rect x='{x_center - width / 2:.2f}' y='{y:.2f}' "
+        f"width='{width:.2f}' height='{axis_bottom - y:.2f}' "
+        "fill='#64748b' opacity='.38' />"
+    )
+
+
+def _format_compact_number(value: float) -> str:
+    if not np.isfinite(value) or value <= 0:
+        return "0"
+    for suffix, divisor in (("B", 1_000_000_000), ("M", 1_000_000), ("K", 1_000)):
+        if abs(value) >= divisor:
+            return f"{value / divisor:.1f}{suffix}"
+    return f"{value:.0f}"
 
 
 def _price_volatility(prices: pd.Series) -> float:

@@ -203,8 +203,9 @@ def test_refresh_market_data_tiles_adds_metrics_and_regression(monkeypatch) -> N
     assert "market-tile-grid" in html
     assert "Price" in html
     assert "Regression" in html
+    assert "Volume" in html
     assert "Vol 0.000%" in html
-    assert "Alpha 99.833" in html
+    assert "Reg. slope 10.500" in html
     assert "https://uk.finance.yahoo.com/quote/AAA/" in html
     assert "clip-AAA" in html
 
