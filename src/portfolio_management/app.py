@@ -259,6 +259,14 @@ def build_app() -> gr.Blocks:
             dashboard["market_end_date"],
             dashboard["market_columns_per_row"],
             dashboard["market_tile_height"],
+            dashboard["market_volatility_min"],
+            dashboard["market_volatility_max"],
+            dashboard["market_regression_slope_min"],
+            dashboard["market_regression_slope_max"],
+            dashboard["market_sharpe_ratio_min"],
+            dashboard["market_sharpe_ratio_max"],
+            dashboard["market_average_volume_min"],
+            dashboard["market_average_volume_max"],
         ]
         dashboard["refresh_market_data_button"].click(
             fn=refresh_market_data_tiles,
@@ -280,6 +288,14 @@ def build_app() -> gr.Blocks:
             dashboard["market_end_date"],
             dashboard["market_columns_per_row"],
             dashboard["market_tile_height"],
+            dashboard["market_volatility_min"],
+            dashboard["market_volatility_max"],
+            dashboard["market_regression_slope_min"],
+            dashboard["market_regression_slope_max"],
+            dashboard["market_sharpe_ratio_min"],
+            dashboard["market_sharpe_ratio_max"],
+            dashboard["market_average_volume_min"],
+            dashboard["market_average_volume_max"],
         ]:
             market_data_filter.change(
                 fn=refresh_market_data_tiles,

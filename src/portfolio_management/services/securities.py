@@ -127,6 +127,24 @@ def list_security_tickers() -> list[str]:
     return list(tickers)
 
 
+def purge_unreferenced_securities() -> int:
+    """Delete securities that are not used by orders or transactions."""
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        securities = session.scalars(
+            select(Security)
+            .where(
+                ~Security.orders.any(),
+                ~Security.transactions.any(),
+            )
+            .order_by(Security.ticker)
+        ).all()
+        for security in securities:
+            session.delete(security)
+        session.commit()
+    return len(securities)
+
+
 def list_asset_class_filter_choices() -> list[tuple[str, str]]:
     """Return (name, code) tuples from the asset_classes table ordered by display_order.
 

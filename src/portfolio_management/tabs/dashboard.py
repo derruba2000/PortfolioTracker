@@ -43,6 +43,15 @@ MARKET_TILE_COLUMN_MIN = 1
 MARKET_TILE_COLUMN_MAX = 8
 MARKET_TILE_HEIGHT_MIN = 260
 MARKET_TILE_HEIGHT_MAX = 700
+MARKET_VOLATILITY_MIN = 0.0
+MARKET_VOLATILITY_MAX = 100.0
+MARKET_REGRESSION_SLOPE_MIN = -1000.0
+MARKET_REGRESSION_SLOPE_MAX = 1000.0
+MARKET_SHARPE_RATIO_MIN = -10.0
+MARKET_SHARPE_RATIO_MAX = 10.0
+MARKET_AVERAGE_VOLUME_MIN = 0.0
+MARKET_AVERAGE_VOLUME_MAX = 1_000_000_000.0
+TRADING_DAYS = 252
 
 
 def dashboard_summary_table(
@@ -431,6 +440,14 @@ def refresh_market_data_tiles(
     end_date_input: str | None = None,
     columns_per_row: int | float | None = DEFAULT_MARKET_TILE_COLUMNS,
     tile_height: int | float | None = DEFAULT_MARKET_TILE_HEIGHT,
+    volatility_min: int | float | None = MARKET_VOLATILITY_MIN,
+    volatility_max: int | float | None = MARKET_VOLATILITY_MAX,
+    regression_slope_min: int | float | None = MARKET_REGRESSION_SLOPE_MIN,
+    regression_slope_max: int | float | None = MARKET_REGRESSION_SLOPE_MAX,
+    sharpe_ratio_min: int | float | None = MARKET_SHARPE_RATIO_MIN,
+    sharpe_ratio_max: int | float | None = MARKET_SHARPE_RATIO_MAX,
+    average_volume_min: int | float | None = MARKET_AVERAGE_VOLUME_MIN,
+    average_volume_max: int | float | None = MARKET_AVERAGE_VOLUME_MAX,
 ) -> object:
     start_date, end_date = _resolve_market_date_window(start_date_input, end_date_input)
     prices = _market_price_frame(
@@ -443,6 +460,30 @@ def refresh_market_data_tiles(
         prices,
         int(columns_per_row or DEFAULT_MARKET_TILE_COLUMNS),
         int(tile_height or DEFAULT_MARKET_TILE_HEIGHT),
+        volatility_range=_normalize_metric_range(
+            volatility_min,
+            volatility_max,
+            MARKET_VOLATILITY_MIN,
+            MARKET_VOLATILITY_MAX,
+        ),
+        regression_slope_range=_normalize_metric_range(
+            regression_slope_min,
+            regression_slope_max,
+            MARKET_REGRESSION_SLOPE_MIN,
+            MARKET_REGRESSION_SLOPE_MAX,
+        ),
+        sharpe_ratio_range=_normalize_metric_range(
+            sharpe_ratio_min,
+            sharpe_ratio_max,
+            MARKET_SHARPE_RATIO_MIN,
+            MARKET_SHARPE_RATIO_MAX,
+        ),
+        average_volume_range=_normalize_metric_range(
+            average_volume_min,
+            average_volume_max,
+            MARKET_AVERAGE_VOLUME_MIN,
+            MARKET_AVERAGE_VOLUME_MAX,
+        ),
     )
 
 
@@ -527,6 +568,16 @@ def _market_tiles_html(
     prices: pd.DataFrame,
     columns_per_row: int,
     tile_height: int,
+    volatility_range: tuple[float, float] = (MARKET_VOLATILITY_MIN, MARKET_VOLATILITY_MAX),
+    regression_slope_range: tuple[float, float] = (
+        MARKET_REGRESSION_SLOPE_MIN,
+        MARKET_REGRESSION_SLOPE_MAX,
+    ),
+    sharpe_ratio_range: tuple[float, float] = (MARKET_SHARPE_RATIO_MIN, MARKET_SHARPE_RATIO_MAX),
+    average_volume_range: tuple[float, float] = (
+        MARKET_AVERAGE_VOLUME_MIN,
+        MARKET_AVERAGE_VOLUME_MAX,
+    ),
 ) -> str:
     columns_per_row = max(
         MARKET_TILE_COLUMN_MIN,
@@ -544,7 +595,31 @@ def _market_tiles_html(
         group = group.sort_values("Date").reset_index(drop=True)
         volatility = _price_volatility(group["Price"])
         alpha, beta = _linear_regression_alpha_beta(group["Price"])
-        tiles.append(_market_tile_html(str(ticker), group, volatility, alpha, beta, tile_height))
+        sharpe_ratio = _price_sharpe_ratio(group["Price"])
+        average_volume = _average_volume(group["Volume"])
+        if not _value_in_range(volatility, volatility_range):
+            continue
+        if not _value_in_range(beta, regression_slope_range):
+            continue
+        if not _value_in_range(sharpe_ratio, sharpe_ratio_range):
+            continue
+        if not _value_in_range(average_volume, average_volume_range):
+            continue
+        tiles.append(
+            _market_tile_html(
+                str(ticker),
+                group,
+                volatility,
+                alpha,
+                beta,
+                sharpe_ratio,
+                average_volume,
+                tile_height,
+            )
+        )
+
+    if not tiles:
+        return _empty_market_html()
 
     return (
         "<style>"
@@ -569,6 +644,8 @@ def _market_tile_html(
     volatility: float,
     alpha: float,
     beta: float,
+    sharpe_ratio: float,
+    average_volume: float,
     tile_height: int,
 ) -> str:
     chart = _market_tile_svg(ticker, prices, alpha, beta, tile_height)
@@ -576,7 +653,10 @@ def _market_tile_html(
         "<div class='market-tile'>"
         "<div class='market-tile-title'>"
         f"<div>{ticker_link(ticker)}</div>"
-        f"<div class='market-tile-metrics'>Vol {volatility:.3f}%<br>Reg. slope {beta:.3f}</div>"
+        f"<div class='market-tile-metrics'>Vol {volatility:.3f}%<br>"
+        f"Reg. slope {beta:.3f}<br>"
+        f"Sharpe {sharpe_ratio:.3f}<br>"
+        f"Avg vol {_format_compact_number(average_volume)}</div>"
         "</div>"
         f"{chart}"
         "</div>"
@@ -734,6 +814,23 @@ def _price_volatility(prices: pd.Series) -> float:
     return float(returns.std(ddof=0) * 100)
 
 
+def _price_sharpe_ratio(prices: pd.Series) -> float:
+    returns = pd.to_numeric(prices, errors="coerce").pct_change(fill_method=None).dropna()
+    if len(returns) < 2:
+        return 0.0
+    volatility = returns.std(ddof=0)
+    if not volatility or np.isnan(volatility):
+        return 0.0
+    return float((returns.mean() / volatility) * np.sqrt(TRADING_DAYS))
+
+
+def _average_volume(volumes: pd.Series) -> float:
+    numeric_volumes = pd.to_numeric(volumes, errors="coerce").dropna()
+    if numeric_volumes.empty:
+        return 0.0
+    return float(numeric_volumes.mean())
+
+
 def _linear_regression_alpha_beta(prices: pd.Series) -> tuple[float, float]:
     numeric_prices = pd.to_numeric(prices, errors="coerce").dropna().to_numpy(dtype=float)
     if len(numeric_prices) == 0:
@@ -743,6 +840,38 @@ def _linear_regression_alpha_beta(prices: pd.Series) -> tuple[float, float]:
     x_values = np.arange(len(numeric_prices), dtype=float)
     beta, alpha = np.polyfit(x_values, numeric_prices, 1)
     return float(alpha), float(beta)
+
+
+def _normalize_metric_range(
+    minimum: int | float | None,
+    maximum: int | float | None,
+    default_minimum: float,
+    default_maximum: float,
+) -> tuple[float, float]:
+    lower = _coerce_metric_bound(minimum, default_minimum)
+    upper = _coerce_metric_bound(maximum, default_maximum)
+    if lower > upper:
+        lower, upper = upper, lower
+    return lower, upper
+
+
+def _coerce_metric_bound(value: int | float | None, default: float) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(numeric_value):
+        return default
+    return numeric_value
+
+
+def _value_in_range(value: float, range_value: tuple[float, float]) -> bool:
+    if not np.isfinite(value):
+        return False
+    lower, upper = range_value
+    return lower <= value <= upper
 
 
 def _empty_market_html() -> str:
@@ -875,6 +1004,67 @@ def build_dashboard_tab() -> dict[str, Any]:
                         step=20,
                         value=DEFAULT_MARKET_TILE_HEIGHT,
                     )
+                with gr.Accordion("Metric Range Filters", open=True):
+                    with gr.Row():
+                        market_volatility_min = gr.Slider(
+                            label="Volatility Min (%)",
+                            minimum=MARKET_VOLATILITY_MIN,
+                            maximum=MARKET_VOLATILITY_MAX,
+                            step=0.1,
+                            value=MARKET_VOLATILITY_MIN,
+                        )
+                        market_volatility_max = gr.Slider(
+                            label="Volatility Max (%)",
+                            minimum=MARKET_VOLATILITY_MIN,
+                            maximum=MARKET_VOLATILITY_MAX,
+                            step=0.1,
+                            value=MARKET_VOLATILITY_MAX,
+                        )
+                    with gr.Row():
+                        market_regression_slope_min = gr.Slider(
+                            label="Regression Slope Min",
+                            minimum=MARKET_REGRESSION_SLOPE_MIN,
+                            maximum=MARKET_REGRESSION_SLOPE_MAX,
+                            step=0.01,
+                            value=MARKET_REGRESSION_SLOPE_MIN,
+                        )
+                        market_regression_slope_max = gr.Slider(
+                            label="Regression Slope Max",
+                            minimum=MARKET_REGRESSION_SLOPE_MIN,
+                            maximum=MARKET_REGRESSION_SLOPE_MAX,
+                            step=0.01,
+                            value=MARKET_REGRESSION_SLOPE_MAX,
+                        )
+                    with gr.Row():
+                        market_sharpe_ratio_min = gr.Slider(
+                            label="Sharpe Ratio Min",
+                            minimum=MARKET_SHARPE_RATIO_MIN,
+                            maximum=MARKET_SHARPE_RATIO_MAX,
+                            step=0.1,
+                            value=MARKET_SHARPE_RATIO_MIN,
+                        )
+                        market_sharpe_ratio_max = gr.Slider(
+                            label="Sharpe Ratio Max",
+                            minimum=MARKET_SHARPE_RATIO_MIN,
+                            maximum=MARKET_SHARPE_RATIO_MAX,
+                            step=0.1,
+                            value=MARKET_SHARPE_RATIO_MAX,
+                        )
+                    with gr.Row():
+                        market_average_volume_min = gr.Slider(
+                            label="Average Volume Min",
+                            minimum=MARKET_AVERAGE_VOLUME_MIN,
+                            maximum=MARKET_AVERAGE_VOLUME_MAX,
+                            step=1_000,
+                            value=MARKET_AVERAGE_VOLUME_MIN,
+                        )
+                        market_average_volume_max = gr.Slider(
+                            label="Average Volume Max",
+                            minimum=MARKET_AVERAGE_VOLUME_MIN,
+                            maximum=MARKET_AVERAGE_VOLUME_MAX,
+                            step=1_000,
+                            value=MARKET_AVERAGE_VOLUME_MAX,
+                        )
                 with gr.Row():
                     market_start_date_input = gr.DateTime(
                         label="Start Date",
@@ -895,6 +1085,14 @@ def build_dashboard_tab() -> dict[str, Any]:
                         end_date_input=market_end_date,
                         columns_per_row=DEFAULT_MARKET_TILE_COLUMNS,
                         tile_height=DEFAULT_MARKET_TILE_HEIGHT,
+                        volatility_min=MARKET_VOLATILITY_MIN,
+                        volatility_max=MARKET_VOLATILITY_MAX,
+                        regression_slope_min=MARKET_REGRESSION_SLOPE_MIN,
+                        regression_slope_max=MARKET_REGRESSION_SLOPE_MAX,
+                        sharpe_ratio_min=MARKET_SHARPE_RATIO_MIN,
+                        sharpe_ratio_max=MARKET_SHARPE_RATIO_MAX,
+                        average_volume_min=MARKET_AVERAGE_VOLUME_MIN,
+                        average_volume_max=MARKET_AVERAGE_VOLUME_MAX,
                     ),
                     label="Market Data",
                 )
@@ -917,6 +1115,14 @@ def build_dashboard_tab() -> dict[str, Any]:
         "market_end_date": market_end_date_input,
         "market_columns_per_row": market_columns_per_row,
         "market_tile_height": market_tile_height,
+        "market_volatility_min": market_volatility_min,
+        "market_volatility_max": market_volatility_max,
+        "market_regression_slope_min": market_regression_slope_min,
+        "market_regression_slope_max": market_regression_slope_max,
+        "market_sharpe_ratio_min": market_sharpe_ratio_min,
+        "market_sharpe_ratio_max": market_sharpe_ratio_max,
+        "market_average_volume_min": market_average_volume_min,
+        "market_average_volume_max": market_average_volume_max,
         "market_data_plot": market_data_plot,
         "refresh_market_data_button": refresh_market_data_button,
     }

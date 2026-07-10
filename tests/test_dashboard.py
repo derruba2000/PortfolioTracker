@@ -206,8 +206,47 @@ def test_refresh_market_data_tiles_adds_metrics_and_regression(monkeypatch) -> N
     assert "Volume" in html
     assert "Vol 0.000%" in html
     assert "Reg. slope 10.500" in html
+    assert "Sharpe 0.000" in html
+    assert "Avg vol 0" in html
     assert "https://uk.finance.yahoo.com/quote/AAA/" in html
     assert "clip-AAA" in html
+
+
+def test_refresh_market_data_tiles_filters_metric_ranges(monkeypatch) -> None:
+    session_factory = _market_data_session_factory()
+    with session_factory() as session:
+        _add_security_with_prices(
+            session,
+            "AAA",
+            AssetClass.EQUITY,
+            [100, 101, 103],
+            volumes=[1000, 1200, 1400],
+        )
+        _add_security_with_prices(
+            session,
+            "BBB",
+            AssetClass.EQUITY,
+            [100, 200, 400],
+            volumes=[10_000, 12_000, 14_000],
+        )
+        session.commit()
+    monkeypatch.setattr(
+        "portfolio_management.tabs.dashboard.get_session_factory",
+        lambda: session_factory,
+    )
+
+    html = refresh_market_data_tiles(
+        asset_type_filter=["EQUITY"],
+        start_date_input="2026-01-01",
+        end_date_input="2026-01-03",
+        regression_slope_min=40,
+        regression_slope_max=200,
+        average_volume_min=10_000,
+        average_volume_max=20_000,
+    )
+
+    assert "quote/BBB/" in html
+    assert "quote/AAA/" not in html
 
 
 def _market_data_session_factory() -> sessionmaker[Session]:
@@ -221,6 +260,7 @@ def _add_security_with_prices(
     ticker: str,
     asset_class: AssetClass,
     closes: list[int],
+    volumes: list[int] | None = None,
 ) -> None:
     security = Security(
         ticker=ticker,
@@ -231,11 +271,13 @@ def _add_security_with_prices(
     session.add(security)
     session.flush()
     for offset, close in enumerate(closes, start=1):
+        volume = volumes[offset - 1] if volumes is not None else None
         session.add(
             PriceHistory(
                 security=security,
                 symbol=ticker,
                 date=date(2026, 1, offset),
                 close=Decimal(str(close)),
+                volume=Decimal(str(volume)) if volume is not None else None,
             )
         )
