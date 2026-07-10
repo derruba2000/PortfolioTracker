@@ -43,13 +43,15 @@ MARKET_TILE_COLUMN_MIN = 1
 MARKET_TILE_COLUMN_MAX = 8
 MARKET_TILE_HEIGHT_MIN = 260
 MARKET_TILE_HEIGHT_MAX = 700
-MARKET_VOLATILITY_MIN = 0.0
+MARKET_VOLATILITY_SLIDER_MIN = 0.0
+MARKET_VOLATILITY_MIN = 0.00001
 MARKET_VOLATILITY_MAX = 100.0
 MARKET_REGRESSION_SLOPE_MIN = -1000.0
 MARKET_REGRESSION_SLOPE_MAX = 1000.0
 MARKET_SHARPE_RATIO_MIN = -1000.0
 MARKET_SHARPE_RATIO_MAX = 1000.0
-MARKET_AVERAGE_VOLUME_MIN = 0.0
+MARKET_AVERAGE_VOLUME_SLIDER_MIN = 0.0
+MARKET_AVERAGE_VOLUME_MIN = 1_000.0
 MARKET_AVERAGE_VOLUME_MAX = 1_000_000_000.0
 DEFAULT_MARKET_SORT_METRIC = "Ticker"
 MARKET_SORT_METRIC_CHOICES = [
@@ -1115,15 +1117,15 @@ def build_dashboard_tab() -> dict[str, Any]:
                     with gr.Row():
                         market_volatility_min = gr.Slider(
                             label="Volatility Min (%)",
-                            minimum=MARKET_VOLATILITY_MIN,
+                            minimum=MARKET_VOLATILITY_SLIDER_MIN,
                             maximum=MARKET_VOLATILITY_MAX,
-                            step=0.1,
+                            step=0.00001,
                             precision=3,
                             value=MARKET_VOLATILITY_MIN,
                         )
                         market_volatility_max = gr.Slider(
                             label="Volatility Max (%)",
-                            minimum=MARKET_VOLATILITY_MIN,
+                            minimum=MARKET_VOLATILITY_SLIDER_MIN,
                             maximum=MARKET_VOLATILITY_MAX,
                             step=0.1,
                             precision=3,
@@ -1162,14 +1164,14 @@ def build_dashboard_tab() -> dict[str, Any]:
                     with gr.Row():
                         market_average_volume_min = gr.Slider(
                             label="Average Volume Min",
-                            minimum=MARKET_AVERAGE_VOLUME_MIN,
+                            minimum=MARKET_AVERAGE_VOLUME_SLIDER_MIN,
                             maximum=MARKET_AVERAGE_VOLUME_MAX,
                             step=1_000,
                             value=MARKET_AVERAGE_VOLUME_MIN,
                         )
                         market_average_volume_max = gr.Slider(
                             label="Average Volume Max",
-                            minimum=MARKET_AVERAGE_VOLUME_MIN,
+                            minimum=MARKET_AVERAGE_VOLUME_SLIDER_MIN,
                             maximum=MARKET_AVERAGE_VOLUME_MAX,
                             step=1_000,
                             value=MARKET_AVERAGE_VOLUME_MAX,
