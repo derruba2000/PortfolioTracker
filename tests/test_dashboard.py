@@ -249,6 +249,30 @@ def test_refresh_market_data_tiles_filters_metric_ranges(monkeypatch) -> None:
     assert "quote/AAA/" not in html
 
 
+def test_refresh_market_data_tiles_sorts_and_limits_tickers(monkeypatch) -> None:
+    session_factory = _market_data_session_factory()
+    with session_factory() as session:
+        _add_security_with_prices(session, "AAA", AssetClass.EQUITY, [100, 101, 102])
+        _add_security_with_prices(session, "BBB", AssetClass.EQUITY, [100, 150, 200])
+        session.commit()
+    monkeypatch.setattr(
+        "portfolio_management.tabs.dashboard.get_session_factory",
+        lambda: session_factory,
+    )
+
+    html = refresh_market_data_tiles(
+        asset_type_filter=["EQUITY"],
+        start_date_input="2026-01-01",
+        end_date_input="2026-01-03",
+        sort_metric="Regression Slope",
+        sort_direction="Descending",
+        ticker_limit=1,
+    )
+
+    assert "quote/BBB/" in html
+    assert "quote/AAA/" not in html
+
+
 def _market_data_session_factory() -> sessionmaker[Session]:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

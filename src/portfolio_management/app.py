@@ -267,6 +267,9 @@ def build_app() -> gr.Blocks:
             dashboard["market_sharpe_ratio_max"],
             dashboard["market_average_volume_min"],
             dashboard["market_average_volume_max"],
+            dashboard["market_sort_metric"],
+            dashboard["market_sort_direction"],
+            dashboard["market_ticker_limit"],
         ]
         dashboard["refresh_market_data_button"].click(
             fn=refresh_market_data_tiles,
@@ -296,6 +299,9 @@ def build_app() -> gr.Blocks:
             dashboard["market_sharpe_ratio_max"],
             dashboard["market_average_volume_min"],
             dashboard["market_average_volume_max"],
+            dashboard["market_sort_metric"],
+            dashboard["market_sort_direction"],
+            dashboard["market_ticker_limit"],
         ]:
             market_data_filter.change(
                 fn=refresh_market_data_tiles,

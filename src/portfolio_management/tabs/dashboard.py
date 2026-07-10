@@ -47,10 +47,22 @@ MARKET_VOLATILITY_MIN = 0.0
 MARKET_VOLATILITY_MAX = 100.0
 MARKET_REGRESSION_SLOPE_MIN = -1000.0
 MARKET_REGRESSION_SLOPE_MAX = 1000.0
-MARKET_SHARPE_RATIO_MIN = -10.0
-MARKET_SHARPE_RATIO_MAX = 10.0
+MARKET_SHARPE_RATIO_MIN = -1000.0
+MARKET_SHARPE_RATIO_MAX = 1000.0
 MARKET_AVERAGE_VOLUME_MIN = 0.0
 MARKET_AVERAGE_VOLUME_MAX = 1_000_000_000.0
+DEFAULT_MARKET_SORT_METRIC = "Ticker"
+MARKET_SORT_METRIC_CHOICES = [
+    DEFAULT_MARKET_SORT_METRIC,
+    "Volatility",
+    "Sharpe Ratio",
+    "Regression Slope",
+]
+DEFAULT_MARKET_SORT_DIRECTION = "Ascending"
+MARKET_SORT_DIRECTION_CHOICES = [DEFAULT_MARKET_SORT_DIRECTION, "Descending"]
+MARKET_TICKER_LIMIT_MIN = 0
+DEFAULT_MARKET_TICKER_LIMIT = 50
+MARKET_TICKER_LIMIT_MAX = 500
 TRADING_DAYS = 252
 
 
@@ -448,6 +460,9 @@ def refresh_market_data_tiles(
     sharpe_ratio_max: int | float | None = MARKET_SHARPE_RATIO_MAX,
     average_volume_min: int | float | None = MARKET_AVERAGE_VOLUME_MIN,
     average_volume_max: int | float | None = MARKET_AVERAGE_VOLUME_MAX,
+    sort_metric: str | None = DEFAULT_MARKET_SORT_METRIC,
+    sort_direction: str | None = DEFAULT_MARKET_SORT_DIRECTION,
+    ticker_limit: int | float | None = DEFAULT_MARKET_TICKER_LIMIT,
 ) -> object:
     start_date, end_date = _resolve_market_date_window(start_date_input, end_date_input)
     prices = _market_price_frame(
@@ -484,6 +499,9 @@ def refresh_market_data_tiles(
             MARKET_AVERAGE_VOLUME_MIN,
             MARKET_AVERAGE_VOLUME_MAX,
         ),
+        sort_metric=_normalize_market_sort_metric(sort_metric),
+        sort_direction=_normalize_market_sort_direction(sort_direction),
+        ticker_limit=_normalize_ticker_limit(ticker_limit),
     )
 
 
@@ -578,6 +596,9 @@ def _market_tiles_html(
         MARKET_AVERAGE_VOLUME_MIN,
         MARKET_AVERAGE_VOLUME_MAX,
     ),
+    sort_metric: str = DEFAULT_MARKET_SORT_METRIC,
+    sort_direction: str = DEFAULT_MARKET_SORT_DIRECTION,
+    ticker_limit: int = DEFAULT_MARKET_TICKER_LIMIT,
 ) -> str:
     columns_per_row = max(
         MARKET_TILE_COLUMN_MIN,
@@ -590,7 +611,7 @@ def _market_tiles_html(
     if prices.empty:
         return _empty_market_html()
 
-    tiles = []
+    tile_contexts = []
     for ticker, group in prices.groupby("Ticker", sort=True):
         group = group.sort_values("Date").reset_index(drop=True)
         volatility = _price_volatility(group["Price"])
@@ -605,21 +626,42 @@ def _market_tiles_html(
             continue
         if not _value_in_range(average_volume, average_volume_range):
             continue
-        tiles.append(
-            _market_tile_html(
-                str(ticker),
-                group,
-                volatility,
-                alpha,
-                beta,
-                sharpe_ratio,
-                average_volume,
-                tile_height,
-            )
+        tile_contexts.append(
+            {
+                "ticker": str(ticker),
+                "group": group,
+                "volatility": volatility,
+                "alpha": alpha,
+                "beta": beta,
+                "sharpe_ratio": sharpe_ratio,
+                "average_volume": average_volume,
+            }
         )
 
-    if not tiles:
+    if not tile_contexts:
         return _empty_market_html()
+
+    tile_contexts = _sort_market_tile_contexts(
+        tile_contexts,
+        sort_metric=sort_metric,
+        sort_direction=sort_direction,
+    )
+    if ticker_limit > 0:
+        tile_contexts = tile_contexts[:ticker_limit]
+
+    tiles = [
+        _market_tile_html(
+            context["ticker"],
+            context["group"],
+            context["volatility"],
+            context["alpha"],
+            context["beta"],
+            context["sharpe_ratio"],
+            context["average_volume"],
+            tile_height,
+        )
+        for context in tile_contexts
+    ]
 
     return (
         "<style>"
@@ -874,6 +916,52 @@ def _value_in_range(value: float, range_value: tuple[float, float]) -> bool:
     return lower <= value <= upper
 
 
+def _normalize_market_sort_metric(value: str | None) -> str:
+    if value in MARKET_SORT_METRIC_CHOICES:
+        return str(value)
+    return DEFAULT_MARKET_SORT_METRIC
+
+
+def _normalize_market_sort_direction(value: str | None) -> str:
+    if value in MARKET_SORT_DIRECTION_CHOICES:
+        return str(value)
+    return DEFAULT_MARKET_SORT_DIRECTION
+
+
+def _normalize_ticker_limit(value: int | float | None) -> int:
+    if value in (None, ""):
+        return DEFAULT_MARKET_TICKER_LIMIT
+    try:
+        numeric_value = int(float(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MARKET_TICKER_LIMIT
+    return max(MARKET_TICKER_LIMIT_MIN, min(MARKET_TICKER_LIMIT_MAX, numeric_value))
+
+
+def _sort_market_tile_contexts(
+    tile_contexts: list[dict[str, object]],
+    sort_metric: str,
+    sort_direction: str,
+) -> list[dict[str, object]]:
+    metric_keys = {
+        "Volatility": "volatility",
+        "Sharpe Ratio": "sharpe_ratio",
+        "Regression Slope": "beta",
+    }
+    reverse = sort_direction == "Descending"
+    metric_key = metric_keys.get(sort_metric)
+    if metric_key is None:
+        return sorted(tile_contexts, key=lambda context: str(context["ticker"]))
+    return sorted(
+        tile_contexts,
+        key=lambda context: (
+            float(context[metric_key]),
+            str(context["ticker"]),
+        ),
+        reverse=reverse,
+    )
+
+
 def _empty_market_html() -> str:
     return (
         "<div style='border:1px solid rgba(148,163,184,.45);border-radius:8px;"
@@ -1004,6 +1092,25 @@ def build_dashboard_tab() -> dict[str, Any]:
                         step=20,
                         value=DEFAULT_MARKET_TILE_HEIGHT,
                     )
+                with gr.Row():
+                    market_sort_metric = gr.Dropdown(
+                        label="Sort By",
+                        choices=MARKET_SORT_METRIC_CHOICES,
+                        value=DEFAULT_MARKET_SORT_METRIC,
+                        allow_custom_value=False,
+                    )
+                    market_sort_direction = gr.Radio(
+                        label="Sort Direction",
+                        choices=MARKET_SORT_DIRECTION_CHOICES,
+                        value=DEFAULT_MARKET_SORT_DIRECTION,
+                    )
+                    market_ticker_limit = gr.Slider(
+                        label="Ticker Limit",
+                        minimum=MARKET_TICKER_LIMIT_MIN,
+                        maximum=MARKET_TICKER_LIMIT_MAX,
+                        step=1,
+                        value=DEFAULT_MARKET_TICKER_LIMIT,
+                    )
                 with gr.Accordion("Metric Range Filters", open=True):
                     with gr.Row():
                         market_volatility_min = gr.Slider(
@@ -1011,6 +1118,7 @@ def build_dashboard_tab() -> dict[str, Any]:
                             minimum=MARKET_VOLATILITY_MIN,
                             maximum=MARKET_VOLATILITY_MAX,
                             step=0.1,
+                            precision=3,
                             value=MARKET_VOLATILITY_MIN,
                         )
                         market_volatility_max = gr.Slider(
@@ -1018,6 +1126,7 @@ def build_dashboard_tab() -> dict[str, Any]:
                             minimum=MARKET_VOLATILITY_MIN,
                             maximum=MARKET_VOLATILITY_MAX,
                             step=0.1,
+                            precision=3,
                             value=MARKET_VOLATILITY_MAX,
                         )
                     with gr.Row():
@@ -1093,6 +1202,9 @@ def build_dashboard_tab() -> dict[str, Any]:
                         sharpe_ratio_max=MARKET_SHARPE_RATIO_MAX,
                         average_volume_min=MARKET_AVERAGE_VOLUME_MIN,
                         average_volume_max=MARKET_AVERAGE_VOLUME_MAX,
+                        sort_metric=DEFAULT_MARKET_SORT_METRIC,
+                        sort_direction=DEFAULT_MARKET_SORT_DIRECTION,
+                        ticker_limit=DEFAULT_MARKET_TICKER_LIMIT,
                     ),
                     label="Market Data",
                 )
@@ -1115,6 +1227,9 @@ def build_dashboard_tab() -> dict[str, Any]:
         "market_end_date": market_end_date_input,
         "market_columns_per_row": market_columns_per_row,
         "market_tile_height": market_tile_height,
+        "market_sort_metric": market_sort_metric,
+        "market_sort_direction": market_sort_direction,
+        "market_ticker_limit": market_ticker_limit,
         "market_volatility_min": market_volatility_min,
         "market_volatility_max": market_volatility_max,
         "market_regression_slope_min": market_regression_slope_min,
