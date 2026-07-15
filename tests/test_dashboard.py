@@ -198,6 +198,9 @@ def test_refresh_market_data_tiles_adds_metrics_and_regression(monkeypatch) -> N
         start_date_input="2026-01-01",
         end_date_input="2026-01-03",
         columns_per_row=4,
+        volatility_min=0,
+        average_volume_min=0,
+        min_data_days=1,
     )
 
     assert "market-tile-grid" in html
@@ -239,10 +242,38 @@ def test_refresh_market_data_tiles_filters_metric_ranges(monkeypatch) -> None:
         asset_type_filter=["EQUITY"],
         start_date_input="2026-01-01",
         end_date_input="2026-01-03",
+        volatility_min=0,
         regression_slope_min=40,
         regression_slope_max=200,
         average_volume_min=10_000,
         average_volume_max=20_000,
+        min_data_days=1,
+    )
+
+    assert "quote/BBB/" in html
+    assert "quote/AAA/" not in html
+
+
+def test_refresh_market_data_tiles_filters_price_range(monkeypatch) -> None:
+    session_factory = _market_data_session_factory()
+    with session_factory() as session:
+        _add_security_with_prices(session, "AAA", AssetClass.EQUITY, [10, 11, 12])
+        _add_security_with_prices(session, "BBB", AssetClass.EQUITY, [100, 120, 140])
+        session.commit()
+    monkeypatch.setattr(
+        "portfolio_management.tabs.dashboard.get_session_factory",
+        lambda: session_factory,
+    )
+
+    html = refresh_market_data_tiles(
+        asset_type_filter=["EQUITY"],
+        start_date_input="2026-01-01",
+        end_date_input="2026-01-03",
+        volatility_min=0,
+        average_volume_min=0,
+        price_min=100,
+        price_max=150,
+        min_data_days=1,
     )
 
     assert "quote/BBB/" in html
@@ -264,9 +295,47 @@ def test_refresh_market_data_tiles_sorts_and_limits_tickers(monkeypatch) -> None
         asset_type_filter=["EQUITY"],
         start_date_input="2026-01-01",
         end_date_input="2026-01-03",
+        volatility_min=0,
+        average_volume_min=0,
         sort_metric="Regression Slope",
         sort_direction="Descending",
         ticker_limit=1,
+        min_data_days=1,
+    )
+
+    assert "quote/BBB/" in html
+    assert "quote/AAA/" not in html
+
+
+def test_refresh_market_data_tiles_excludes_tickers_with_less_than_30_days(
+    monkeypatch,
+) -> None:
+    session_factory = _market_data_session_factory()
+    with session_factory() as session:
+        _add_security_with_prices(
+            session,
+            "AAA",
+            AssetClass.EQUITY,
+            [100 + index for index in range(29)],
+        )
+        _add_security_with_prices(
+            session,
+            "BBB",
+            AssetClass.EQUITY,
+            [200 + index for index in range(30)],
+        )
+        session.commit()
+    monkeypatch.setattr(
+        "portfolio_management.tabs.dashboard.get_session_factory",
+        lambda: session_factory,
+    )
+
+    html = refresh_market_data_tiles(
+        asset_type_filter=["EQUITY"],
+        start_date_input="2026-01-01",
+        end_date_input="2026-01-30",
+        volatility_min=0,
+        average_volume_min=0,
     )
 
     assert "quote/BBB/" in html

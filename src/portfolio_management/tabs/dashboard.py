@@ -53,6 +53,8 @@ MARKET_SHARPE_RATIO_MAX = 1000.0
 MARKET_AVERAGE_VOLUME_SLIDER_MIN = 0.0
 MARKET_AVERAGE_VOLUME_MIN = 1_000.0
 MARKET_AVERAGE_VOLUME_MAX = 1_000_000_000.0
+MARKET_PRICE_MIN = 0.0
+MARKET_PRICE_MAX = 10_000_000.0
 DEFAULT_MARKET_SORT_METRIC = "Ticker"
 MARKET_SORT_METRIC_CHOICES = [
     DEFAULT_MARKET_SORT_METRIC,
@@ -66,6 +68,7 @@ MARKET_TICKER_LIMIT_MIN = 0
 DEFAULT_MARKET_TICKER_LIMIT = 50
 MARKET_TICKER_LIMIT_MAX = 500
 TRADING_DAYS = 252
+MARKET_MIN_DAYS_REQUIRED = 30
 
 
 def dashboard_summary_table(
@@ -462,9 +465,12 @@ def refresh_market_data_tiles(
     sharpe_ratio_max: int | float | None = MARKET_SHARPE_RATIO_MAX,
     average_volume_min: int | float | None = MARKET_AVERAGE_VOLUME_MIN,
     average_volume_max: int | float | None = MARKET_AVERAGE_VOLUME_MAX,
+    price_min: int | float | None = MARKET_PRICE_MIN,
+    price_max: int | float | None = MARKET_PRICE_MAX,
     sort_metric: str | None = DEFAULT_MARKET_SORT_METRIC,
     sort_direction: str | None = DEFAULT_MARKET_SORT_DIRECTION,
     ticker_limit: int | float | None = DEFAULT_MARKET_TICKER_LIMIT,
+    min_data_days: int = MARKET_MIN_DAYS_REQUIRED,
 ) -> object:
     start_date, end_date = _resolve_market_date_window(start_date_input, end_date_input)
     prices = _market_price_frame(
@@ -501,6 +507,13 @@ def refresh_market_data_tiles(
             MARKET_AVERAGE_VOLUME_MIN,
             MARKET_AVERAGE_VOLUME_MAX,
         ),
+        price_range=_normalize_metric_range(
+            price_min,
+            price_max,
+            MARKET_PRICE_MIN,
+            MARKET_PRICE_MAX,
+        ),
+        min_data_days=max(1, int(min_data_days)),
         sort_metric=_normalize_market_sort_metric(sort_metric),
         sort_direction=_normalize_market_sort_direction(sort_direction),
         ticker_limit=_normalize_ticker_limit(ticker_limit),
@@ -598,6 +611,8 @@ def _market_tiles_html(
         MARKET_AVERAGE_VOLUME_MIN,
         MARKET_AVERAGE_VOLUME_MAX,
     ),
+    price_range: tuple[float, float] = (MARKET_PRICE_MIN, MARKET_PRICE_MAX),
+    min_data_days: int = MARKET_MIN_DAYS_REQUIRED,
     sort_metric: str = DEFAULT_MARKET_SORT_METRIC,
     sort_direction: str = DEFAULT_MARKET_SORT_DIRECTION,
     ticker_limit: int = DEFAULT_MARKET_TICKER_LIMIT,
@@ -616,10 +631,15 @@ def _market_tiles_html(
     tile_contexts = []
     for ticker, group in prices.groupby("Ticker", sort=True):
         group = group.sort_values("Date").reset_index(drop=True)
+        if _count_market_data_days(group["Date"]) < min_data_days:
+            continue
+        latest_price = _latest_price(group["Price"])
         volatility = _price_volatility(group["Price"])
         alpha, beta = _linear_regression_alpha_beta(group["Price"])
         sharpe_ratio = _price_sharpe_ratio(group["Price"])
         average_volume = _average_volume(group["Volume"])
+        if not _value_in_range(latest_price, price_range):
+            continue
         if not _value_in_range(volatility, volatility_range):
             continue
         if not _value_in_range(beta, regression_slope_range):
@@ -873,6 +893,20 @@ def _average_volume(volumes: pd.Series) -> float:
     if numeric_volumes.empty:
         return 0.0
     return float(numeric_volumes.mean())
+
+
+def _latest_price(prices: pd.Series) -> float:
+    numeric_prices = pd.to_numeric(prices, errors="coerce").dropna()
+    if numeric_prices.empty:
+        return 0.0
+    return float(numeric_prices.iloc[-1])
+
+
+def _count_market_data_days(dates: pd.Series) -> int:
+    parsed_dates = pd.to_datetime(dates, errors="coerce")
+    if parsed_dates.empty:
+        return 0
+    return int(parsed_dates.dropna().dt.normalize().nunique())
 
 
 def _linear_regression_alpha_beta(prices: pd.Series) -> tuple[float, float]:
@@ -1176,6 +1210,15 @@ def build_dashboard_tab() -> dict[str, Any]:
                             step=1_000,
                             value=MARKET_AVERAGE_VOLUME_MAX,
                         )
+                    with gr.Row():
+                        market_price_min = gr.Textbox(
+                            label="Price Min",
+                            value=str(MARKET_PRICE_MIN),
+                        )
+                        market_price_max = gr.Textbox(
+                            label="Price Max",
+                            value=str(MARKET_PRICE_MAX),
+                        )
                 with gr.Row():
                     market_start_date_input = gr.DateTime(
                         label="Start Date",
@@ -1204,6 +1247,8 @@ def build_dashboard_tab() -> dict[str, Any]:
                         sharpe_ratio_max=MARKET_SHARPE_RATIO_MAX,
                         average_volume_min=MARKET_AVERAGE_VOLUME_MIN,
                         average_volume_max=MARKET_AVERAGE_VOLUME_MAX,
+                        price_min=MARKET_PRICE_MIN,
+                        price_max=MARKET_PRICE_MAX,
                         sort_metric=DEFAULT_MARKET_SORT_METRIC,
                         sort_direction=DEFAULT_MARKET_SORT_DIRECTION,
                         ticker_limit=DEFAULT_MARKET_TICKER_LIMIT,
@@ -1240,6 +1285,8 @@ def build_dashboard_tab() -> dict[str, Any]:
         "market_sharpe_ratio_max": market_sharpe_ratio_max,
         "market_average_volume_min": market_average_volume_min,
         "market_average_volume_max": market_average_volume_max,
+        "market_price_min": market_price_min,
+        "market_price_max": market_price_max,
         "market_data_plot": market_data_plot,
         "refresh_market_data_button": refresh_market_data_button,
     }
